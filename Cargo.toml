@@ -1,14 +1,14 @@
 [package]
-name = "winit"
-version = "0.30.13"
+name = "fission-winit"
+version = "0.30.13-fission.1"
 authors = [
     "The winit contributors",
     "Pierre Krieger <pierre.krieger1708@gmail.com>",
 ]
-description = "Cross-platform window creation library."
+description = "Fission's patched fork of the cross-platform winit window creation library."
 keywords = ["windowing"]
 readme = "README.md"
-documentation = "https://docs.rs/winit"
+documentation = "https://docs.rs/fission-winit"
 categories = ["gui"]
 rust-version.workspace = true
 repository.workspace = true
@@ -25,6 +25,9 @@ include = [
     "/src/platform_impl/web/script/**/*.min.js",
     "/tests",
 ]
+
+[lib]
+name = "winit"
 
 [package.metadata.docs.rs]
 features = [
@@ -86,7 +89,7 @@ cfg_aliases = "0.2.1"
 [dependencies]
 bitflags = "2"
 cursor-icon = "1.1.0"
-dpi = { version = "0.1.1", path = "dpi" }
+dpi = "0.1.1"
 rwh_04 = { package = "raw-window-handle", version = "0.4", optional = true }
 rwh_05 = { package = "raw-window-handle", version = "0.5.2", features = [
     "std",
@@ -102,7 +105,7 @@ tracing = { version = "0.1.40", default-features = false }
 image = { version = "0.25.0", default-features = false, features = ["png"] }
 tracing = { version = "0.1.40", default-features = false, features = ["log"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-winit = { path = ".", features = ["rwh_05"] }
+winit = { package = "fission-winit", path = ".", version = "0.30.13-fission.1", features = ["rwh_05"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dev-dependencies]
 softbuffer = { version = "0.4.0", default-features = false, features = [
@@ -369,7 +372,7 @@ members = ["dpi"]
 
 [workspace.package]
 rust-version = "1.70.0"
-repository = "https://github.com/rust-windowing/winit"
+repository = "https://github.com/worka-ai/winit"
 license = "Apache-2.0"
 edition = "2021"
 
