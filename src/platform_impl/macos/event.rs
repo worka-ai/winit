@@ -89,6 +89,27 @@ fn get_logical_key_char(ns_event: &NSEvent, modifierless_chars: &str) -> Key {
     Key::Character(SmolStr::new(string))
 }
 
+fn text_from_mismatched_space_key(
+    key_from_code: &Key,
+    text_with_all_modifiers: Option<&SmolStr>,
+    has_ctrl: bool,
+    has_cmd: bool,
+) -> Option<Key> {
+    // Some remote input layers deliver real text in `characters()` but use the
+    // Space scancode for every synthetic key event. Preserve the produced text
+    // while leaving the physical key and modifierless key code-derived.
+    if !matches!(key_from_code, Key::Named(NamedKey::Space)) || has_ctrl || has_cmd {
+        return None;
+    }
+
+    let text = text_with_all_modifiers?;
+    if text.as_str() == " " || text.chars().any(char::is_control) {
+        return None;
+    }
+
+    Some(Key::Character(text.clone()))
+}
+
 /// Create `KeyEvent` for the given `NSEvent`.
 ///
 /// This function shouldn't be called when the IME input is in process.
@@ -118,13 +139,12 @@ pub(crate) fn create_key_event(ns_event: &NSEvent, is_press: bool, is_repeat: bo
     };
 
     let key_from_code = code_to_key(physical_key, scancode);
+    let modifiers = unsafe { ns_event.modifierFlags() };
+    let has_ctrl = modifiers.contains(NSEventModifierFlags::NSEventModifierFlagControl);
+    let has_cmd = modifiers.contains(NSEventModifierFlags::NSEventModifierFlagCommand);
     let (logical_key, key_without_modifiers) = if matches!(key_from_code, Key::Unidentified(_)) {
         // `get_modifierless_char/key_without_modifiers` ignores ALL modifiers.
         let key_without_modifiers = get_modifierless_char(scancode);
-
-        let modifiers = unsafe { ns_event.modifierFlags() };
-        let has_ctrl = modifiers.contains(NSEventModifierFlags::NSEventModifierFlagControl);
-        let has_cmd = modifiers.contains(NSEventModifierFlags::NSEventModifierFlagCommand);
 
         let logical_key = match text_with_all_modifiers.as_ref() {
             // Only checking for ctrl and cmd here, not checking for alt because we DO want to
@@ -147,6 +167,13 @@ pub(crate) fn create_key_event(ns_event: &NSEvent, is_press: bool, is_repeat: bo
         };
 
         (logical_key, key_without_modifiers)
+    } else if let Some(character_key) = text_from_mismatched_space_key(
+        &key_from_code,
+        text_with_all_modifiers.as_ref(),
+        has_ctrl,
+        has_cmd,
+    ) {
+        (character_key, key_from_code)
     } else {
         (key_from_code.clone(), key_from_code)
     };
