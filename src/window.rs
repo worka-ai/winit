@@ -953,6 +953,7 @@ impl Window {
     ///
     /// ## Platform-specific
     ///
+    /// - **macOS:** Must enable the `private-apple-apis` Cargo feature.
     /// - **Android / iOS / X11 / Web / Windows:** Unsupported.
     /// - **Wayland:** Only works with org_kde_kwin_blur_manager protocol.
     #[inline]
