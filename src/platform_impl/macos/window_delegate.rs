@@ -888,17 +888,30 @@ impl WindowDelegate {
     }
 
     pub fn set_blur(&self, blur: bool) {
-        // NOTE: in general we want to specify the blur radius, but the choice of 80
-        // should be a reasonable default.
-        let radius = if blur { 80 } else { 0 };
-        let window_number = unsafe { self.window().windowNumber() };
-        unsafe {
-            ffi::CGSSetWindowBackgroundBlurRadius(
-                ffi::CGSMainConnectionID(),
-                window_number,
-                radius,
-            );
+        #[cfg(feature = "private-apple-apis")]
+        {
+            #[link(name = "CoreGraphics", kind = "framework")]
+            extern "C" {
+                // Wildly used private APIs; Apple uses them for their Terminal.app.
+                fn CGSMainConnectionID() -> *mut AnyObject;
+                fn CGSSetWindowBackgroundBlurRadius(
+                    connection_id: *mut AnyObject,
+                    window_id: objc2::ffi::NSInteger,
+                    radius: i64,
+                ) -> i32;
+            }
+
+            // NOTE: in general we want to specify the blur radius, but the choice of 80
+            // should be a reasonable default.
+            let radius = if blur { 80 } else { 0 };
+            let window_number = unsafe { self.window().windowNumber() };
+            unsafe {
+                CGSSetWindowBackgroundBlurRadius(CGSMainConnectionID(), window_number, radius);
+            }
         }
+
+        // TODO: Implement blur using public methods somehow?
+        let _ = blur;
     }
 
     pub fn set_visible(&self, visible: bool) {
