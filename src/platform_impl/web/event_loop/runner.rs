@@ -447,6 +447,28 @@ impl Shared {
         self.send_events(iter::once(event));
     }
 
+    /// Delivers a browser event before its DOM callback returns.
+    ///
+    /// Clipboard writes are only accepted during the trusted browser callback,
+    /// so these events cannot follow the normal polling queue. Returns `false`
+    /// if the application event handler is not currently available.
+    pub(crate) fn send_browser_event(&self, event: Event<()>) -> bool {
+        if self.is_closed() {
+            return false;
+        }
+
+        let can_run = matches!(
+            self.0.runner.try_borrow().as_ref().map(Deref::deref),
+            Ok(RunnerEnum::Running(_))
+        );
+        if !can_run {
+            return false;
+        }
+
+        self.run_until_cleared(iter::once(event));
+        true
+    }
+
     // Add a series of user events to the event loop runner
     //
     // This will schedule the event loop to wake up instead of waking it up immediately if its not

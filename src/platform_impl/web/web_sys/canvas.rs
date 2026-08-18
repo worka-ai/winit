@@ -7,14 +7,19 @@ use smol_str::SmolStr;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{
-    CssStyleDeclaration, Document, Event, FocusEvent, HtmlCanvasElement, KeyboardEvent,
-    PointerEvent, WheelEvent,
+    ClipboardEvent, CompositionEvent, CssStyleDeclaration, Document, Event, EventTarget,
+    FocusEvent, HtmlCanvasElement, HtmlTextAreaElement, InputEvent, KeyboardEvent, PointerEvent,
+    WheelEvent,
 };
 
 use crate::dpi::{LogicalPosition, PhysicalPosition, PhysicalSize};
 use crate::error::OsError as RootOE;
-use crate::event::{Force, InnerSizeWriter, MouseButton, MouseScrollDelta};
+use crate::event::{
+    Force, Ime, InnerSizeWriter, MouseButton, MouseScrollDelta, WebClipboardAction,
+    WebClipboardEvent,
+};
 use crate::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
+use crate::platform::web::BrowserDefaults;
 use crate::platform_impl::OsError;
 use crate::window::{WindowAttributes, WindowId as RootWindowId};
 
@@ -34,12 +39,15 @@ pub struct Canvas {
     id: WindowId,
     pub has_focus: Rc<Cell<bool>>,
     pub prevent_default: Rc<Cell<bool>>,
+    pub browser_defaults: Rc<Cell<BrowserDefaults>>,
     pub is_intersecting: Option<bool>,
     on_touch_start: Option<EventListenerHandle<dyn FnMut(Event)>>,
     on_focus: Option<EventListenerHandle<dyn FnMut(FocusEvent)>>,
     on_blur: Option<EventListenerHandle<dyn FnMut(FocusEvent)>>,
     on_keyboard_release: Option<EventListenerHandle<dyn FnMut(KeyboardEvent)>>,
     on_keyboard_press: Option<EventListenerHandle<dyn FnMut(KeyboardEvent)>>,
+    on_ime_keyboard_release: Option<EventListenerHandle<dyn FnMut(KeyboardEvent)>>,
+    on_ime_keyboard_press: Option<EventListenerHandle<dyn FnMut(KeyboardEvent)>>,
     on_mouse_wheel: Option<EventListenerHandle<dyn FnMut(WheelEvent)>>,
     on_dark_mode: Option<MediaQueryListHandle>,
     pointer_handler: PointerHandler,
@@ -48,6 +56,17 @@ pub struct Canvas {
     animation_frame_handler: AnimationFrameHandler,
     on_touch_end: Option<EventListenerHandle<dyn FnMut(Event)>>,
     on_context_menu: Option<EventListenerHandle<dyn FnMut(PointerEvent)>>,
+    on_copy: Option<EventListenerHandle<dyn FnMut(ClipboardEvent)>>,
+    on_cut: Option<EventListenerHandle<dyn FnMut(ClipboardEvent)>>,
+    on_paste: Option<EventListenerHandle<dyn FnMut(ClipboardEvent)>>,
+    ime_element: HtmlTextAreaElement,
+    ime_allowed: Rc<Cell<bool>>,
+    on_ime_focus: Option<EventListenerHandle<dyn FnMut(FocusEvent)>>,
+    on_ime_blur: Option<EventListenerHandle<dyn FnMut(FocusEvent)>>,
+    on_composition_start: Option<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
+    on_composition_update: Option<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
+    on_composition_end: Option<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
+    on_ime_input: Option<EventListenerHandle<dyn FnMut(InputEvent)>>,
     pub cursor: CursorHandler,
 }
 
@@ -110,6 +129,27 @@ impl Canvas {
 
         let style = Style::new(&window, &canvas);
 
+        let ime_element: HtmlTextAreaElement = document
+            .create_element("textarea")
+            .map_err(|_| os_error!(OsError("Failed to create IME element".to_owned())))?
+            .unchecked_into();
+        ime_element.set_tab_index(-1);
+        ime_element.set_attribute("autocomplete", "off").ok();
+        ime_element.set_attribute("autocapitalize", "off").ok();
+        let ime_style = ime_element.style();
+        ime_style.set_property("position", "fixed").ok();
+        ime_style.set_property("width", "1px").ok();
+        ime_style.set_property("height", "1px").ok();
+        ime_style.set_property("opacity", "0").ok();
+        ime_style.set_property("pointer-events", "none").ok();
+        ime_style.set_property("resize", "none").ok();
+        ime_style.set_property("overflow", "hidden").ok();
+        document
+            .body()
+            .expect("Failed to get body from document")
+            .append_child(&ime_element)
+            .map_err(|_| os_error!(OsError("Failed to append IME element".to_owned())))?;
+
         let cursor = CursorHandler::new(main_thread, canvas.clone(), style.clone());
 
         let common = Common {
@@ -154,12 +194,15 @@ impl Canvas {
             id,
             has_focus: Rc::new(Cell::new(false)),
             prevent_default: Rc::new(Cell::new(attr.platform_specific.prevent_default)),
+            browser_defaults: Rc::new(Cell::new(attr.platform_specific.browser_defaults)),
             is_intersecting: None,
             on_touch_start: None,
             on_blur: None,
             on_focus: None,
             on_keyboard_release: None,
             on_keyboard_press: None,
+            on_ime_keyboard_release: None,
+            on_ime_keyboard_press: None,
             on_mouse_wheel: None,
             on_dark_mode: None,
             pointer_handler: PointerHandler::new(),
@@ -168,6 +211,17 @@ impl Canvas {
             animation_frame_handler: AnimationFrameHandler::new(window),
             on_touch_end: None,
             on_context_menu: None,
+            on_copy: None,
+            on_cut: None,
+            on_paste: None,
+            ime_element,
+            ime_allowed: Rc::new(Cell::new(false)),
+            on_ime_focus: None,
+            on_ime_blur: None,
+            on_composition_start: None,
+            on_composition_update: None,
+            on_composition_end: None,
+            on_ime_input: None,
             cursor,
         })
     }
@@ -244,8 +298,9 @@ impl Canvas {
 
     pub fn on_touch_start(&mut self) {
         let prevent_default = Rc::clone(&self.prevent_default);
+        let browser_defaults = Rc::clone(&self.browser_defaults);
         self.on_touch_start = Some(self.common.add_event("touchstart", move |event: Event| {
-            if prevent_default.get() {
+            if prevent_default.get() && !browser_defaults.get().contains(BrowserDefaults::TOUCH) {
                 event.prevent_default();
             }
         }));
@@ -255,9 +310,122 @@ impl Canvas {
     where
         F: 'static + FnMut(),
     {
-        self.on_blur = Some(self.common.add_event("blur", move |_: FocusEvent| {
-            handler();
+        let ime_element = self.ime_element.clone();
+        self.on_blur = Some(self.common.add_event("blur", move |event: FocusEvent| {
+            if event.related_target().as_ref() != Some(ime_element.as_ref()) {
+                handler();
+            }
         }));
+    }
+
+    pub fn on_ime<F, I>(&mut self, focus_handler: F, ime_handler: I)
+    where
+        F: 'static + FnMut(bool),
+        I: 'static + FnMut(Ime),
+    {
+        let canvas: EventTarget = self.common.raw().clone().into();
+        let ime_handler = Rc::new(std::cell::RefCell::new(ime_handler));
+        let focus_handler = Rc::new(std::cell::RefCell::new(focus_handler));
+        let input_composing = Rc::new(Cell::new(false));
+
+        let handler = Rc::clone(&ime_handler);
+        let focus = Rc::clone(&focus_handler);
+        self.on_ime_focus = Some(self.add_ime_event("focus", move |_: FocusEvent| {
+            focus.borrow_mut()(true);
+            handler.borrow_mut()(Ime::Enabled);
+        }));
+
+        let handler = Rc::clone(&ime_handler);
+        let focus = focus_handler;
+        self.on_ime_blur = Some(self.add_ime_event("blur", move |event: FocusEvent| {
+            handler.borrow_mut()(Ime::Disabled);
+            if event.related_target().as_ref() != Some(&canvas) {
+                focus.borrow_mut()(false);
+            }
+        }));
+
+        let composing = Rc::clone(&input_composing);
+        let handler = Rc::clone(&ime_handler);
+        self.on_composition_start =
+            Some(self.add_ime_event("compositionstart", move |event: CompositionEvent| {
+                composing.set(true);
+                let text = event.data().unwrap_or_default();
+                let end = text.len();
+                handler.borrow_mut()(Ime::Preedit(text, Some((end, end))));
+            }));
+
+        let handler = Rc::clone(&ime_handler);
+        self.on_composition_update =
+            Some(self.add_ime_event("compositionupdate", move |event: CompositionEvent| {
+                let text = event.data().unwrap_or_default();
+                let end = text.len();
+                handler.borrow_mut()(Ime::Preedit(text, Some((end, end))));
+            }));
+
+        let composing = Rc::clone(&input_composing);
+        let handler = Rc::clone(&ime_handler);
+        let element = self.ime_element.clone();
+        self.on_composition_end =
+            Some(self.add_ime_event("compositionend", move |event: CompositionEvent| {
+                composing.set(false);
+                handler.borrow_mut()(Ime::Preedit(String::new(), None));
+                if let Some(text) = event.data().filter(|text| !text.is_empty()) {
+                    handler.borrow_mut()(Ime::Commit(text));
+                }
+                element.set_value("");
+            }));
+
+        let handler = ime_handler;
+        let element = self.ime_element.clone();
+        self.on_ime_input = Some(self.add_ime_event("input", move |_: InputEvent| {
+            if !input_composing.get() {
+                let text = element.value();
+                if !text.is_empty() {
+                    handler.borrow_mut()(Ime::Commit(text));
+                    element.set_value("");
+                }
+            }
+        }));
+    }
+
+    fn add_ime_event<E, F>(
+        &self,
+        event_name: &'static str,
+        handler: F,
+    ) -> EventListenerHandle<dyn FnMut(E)>
+    where
+        E: 'static + AsRef<web_sys::Event> + wasm_bindgen::convert::FromWasmAbi,
+        F: 'static + FnMut(E),
+    {
+        EventListenerHandle::new(self.ime_element.clone(), event_name, Closure::new(handler))
+    }
+
+    pub fn set_ime_allowed(&self, allowed: bool) {
+        if self.ime_allowed.replace(allowed) == allowed {
+            return;
+        }
+        if allowed {
+            let _ = self.ime_element.focus();
+        } else {
+            let _ = self.common.raw.focus();
+        }
+    }
+
+    pub fn set_ime_cursor_area(&self, position: PhysicalPosition<f64>) {
+        let scale = super::scale_factor(&self.common.window);
+        let canvas_position = self.position();
+        let position = position.to_logical::<f64>(scale);
+        let style = self.ime_element.style();
+        style.set_property("left", &format!("{}px", canvas_position.x + position.x)).ok();
+        style.set_property("top", &format!("{}px", canvas_position.y + position.y)).ok();
+    }
+
+    pub fn set_ime_purpose(&self, purpose: crate::window::ImePurpose) {
+        let input_mode = match purpose {
+            crate::window::ImePurpose::Terminal => "text",
+            _ => "text",
+        };
+        self.ime_element.set_attribute("inputmode", input_mode).ok();
     }
 
     pub fn on_focus<F>(&mut self, mut handler: F)
@@ -269,50 +437,100 @@ impl Canvas {
         }));
     }
 
-    pub fn on_keyboard_release<F>(&mut self, mut handler: F)
+    pub fn on_keyboard_release<F>(&mut self, handler: F)
     where
         F: 'static + FnMut(PhysicalKey, Key, Option<SmolStr>, KeyLocation, bool, ModifiersState),
     {
-        let prevent_default = Rc::clone(&self.prevent_default);
-        self.on_keyboard_release =
-            Some(self.common.add_event("keyup", move |event: KeyboardEvent| {
-                if prevent_default.get() {
-                    event.prevent_default();
-                }
-                let key = event::key(&event);
-                let modifiers = event::keyboard_modifiers(&event);
-                handler(
-                    event::key_code(&event),
-                    key,
-                    event::key_text(&event),
-                    event::key_location(&event),
-                    event.repeat(),
-                    modifiers,
-                );
-            }));
+        let handler = Rc::new(std::cell::RefCell::new(handler));
+        let make_listener =
+            |target: EventTarget,
+             handler: Rc<std::cell::RefCell<F>>,
+             prevent_default: Rc<Cell<bool>>,
+             browser_defaults: Rc<Cell<BrowserDefaults>>| {
+                EventListenerHandle::new(
+                    target,
+                    "keyup",
+                    Closure::new(move |event: KeyboardEvent| {
+                        if prevent_default.get()
+                            && !browser_defaults.get().contains(BrowserDefaults::KEYBOARD)
+                            && !event.is_composing()
+                            && !is_clipboard_shortcut(&event)
+                        {
+                            event.prevent_default();
+                        }
+                        let key = event::key(&event);
+                        let modifiers = event::keyboard_modifiers(&event);
+                        handler.borrow_mut()(
+                            event::key_code(&event),
+                            key,
+                            event::key_text(&event),
+                            event::key_location(&event),
+                            event.repeat(),
+                            modifiers,
+                        );
+                    }),
+                )
+            };
+        self.on_keyboard_release = Some(make_listener(
+            self.common.raw().clone().into(),
+            Rc::clone(&handler),
+            Rc::clone(&self.prevent_default),
+            Rc::clone(&self.browser_defaults),
+        ));
+        self.on_ime_keyboard_release = Some(make_listener(
+            self.ime_element.clone().into(),
+            handler,
+            Rc::clone(&self.prevent_default),
+            Rc::clone(&self.browser_defaults),
+        ));
     }
 
-    pub fn on_keyboard_press<F>(&mut self, mut handler: F)
+    pub fn on_keyboard_press<F>(&mut self, handler: F)
     where
         F: 'static + FnMut(PhysicalKey, Key, Option<SmolStr>, KeyLocation, bool, ModifiersState),
     {
-        let prevent_default = Rc::clone(&self.prevent_default);
-        self.on_keyboard_press =
-            Some(self.common.add_event("keydown", move |event: KeyboardEvent| {
-                if prevent_default.get() {
-                    event.prevent_default();
-                }
-                let key = event::key(&event);
-                let modifiers = event::keyboard_modifiers(&event);
-                handler(
-                    event::key_code(&event),
-                    key,
-                    event::key_text(&event),
-                    event::key_location(&event),
-                    event.repeat(),
-                    modifiers,
-                );
-            }));
+        let handler = Rc::new(std::cell::RefCell::new(handler));
+        let make_listener =
+            |target: EventTarget,
+             handler: Rc<std::cell::RefCell<F>>,
+             prevent_default: Rc<Cell<bool>>,
+             browser_defaults: Rc<Cell<BrowserDefaults>>| {
+                EventListenerHandle::new(
+                    target,
+                    "keydown",
+                    Closure::new(move |event: KeyboardEvent| {
+                        if prevent_default.get()
+                            && !browser_defaults.get().contains(BrowserDefaults::KEYBOARD)
+                            && !event.is_composing()
+                            && !is_clipboard_shortcut(&event)
+                        {
+                            event.prevent_default();
+                        }
+                        let key = event::key(&event);
+                        let modifiers = event::keyboard_modifiers(&event);
+                        handler.borrow_mut()(
+                            event::key_code(&event),
+                            key,
+                            event::key_text(&event),
+                            event::key_location(&event),
+                            event.repeat(),
+                            modifiers,
+                        );
+                    }),
+                )
+            };
+        self.on_keyboard_press = Some(make_listener(
+            self.common.raw().clone().into(),
+            Rc::clone(&handler),
+            Rc::clone(&self.prevent_default),
+            Rc::clone(&self.browser_defaults),
+        ));
+        self.on_ime_keyboard_press = Some(make_listener(
+            self.ime_element.clone().into(),
+            handler,
+            Rc::clone(&self.prevent_default),
+            Rc::clone(&self.browser_defaults),
+        ));
     }
 
     pub fn on_cursor_leave<F>(&mut self, handler: F)
@@ -347,6 +565,9 @@ impl Canvas {
             mouse_handler,
             touch_handler,
             Rc::clone(&self.prevent_default),
+            Rc::clone(&self.browser_defaults),
+            Rc::clone(&self.ime_allowed),
+            self.ime_element.clone(),
         )
     }
 
@@ -363,6 +584,9 @@ impl Canvas {
             touch_handler,
             button_handler,
             Rc::clone(&self.prevent_default),
+            Rc::clone(&self.browser_defaults),
+            Rc::clone(&self.ime_allowed),
+            self.ime_element.clone(),
         )
     }
 
@@ -379,8 +603,9 @@ impl Canvas {
     {
         let window = self.common.window.clone();
         let prevent_default = Rc::clone(&self.prevent_default);
+        let browser_defaults = Rc::clone(&self.browser_defaults);
         self.on_mouse_wheel = Some(self.common.add_event("wheel", move |event: WheelEvent| {
-            if prevent_default.get() {
+            if prevent_default.get() && !browser_defaults.get().contains(BrowserDefaults::WHEEL) {
                 event.prevent_default();
             }
 
@@ -431,14 +656,86 @@ impl Canvas {
         self.animation_frame_handler.on_animation_frame(f)
     }
 
-    pub(crate) fn on_context_menu(&mut self) {
+    pub(crate) fn on_context_menu<F>(&mut self, mut handler: F)
+    where
+        F: 'static + FnMut(PhysicalPosition<f64>, ModifiersState),
+    {
+        let window = self.common.window.clone();
         let prevent_default = Rc::clone(&self.prevent_default);
+        let browser_defaults = Rc::clone(&self.browser_defaults);
         self.on_context_menu =
             Some(self.common.add_event("contextmenu", move |event: PointerEvent| {
-                if prevent_default.get() {
+                if prevent_default.get()
+                    && !browser_defaults.get().contains(BrowserDefaults::CONTEXT_MENU)
+                {
                     event.prevent_default();
                 }
+                handler(
+                    event::mouse_position(&event).to_physical(super::scale_factor(&window)),
+                    event::mouse_modifiers(&event),
+                );
             }));
+    }
+
+    pub(crate) fn on_clipboard<F>(&mut self, handler: F)
+    where
+        F: 'static + FnMut(WebClipboardEvent),
+    {
+        let handler = Rc::new(std::cell::RefCell::new(handler));
+        self.on_copy = Some(self.add_clipboard_listener(
+            "copy",
+            WebClipboardAction::Copy,
+            Rc::clone(&handler),
+        ));
+        self.on_cut =
+            Some(self.add_clipboard_listener("cut", WebClipboardAction::Cut, Rc::clone(&handler)));
+        self.on_paste =
+            Some(self.add_clipboard_listener("paste", WebClipboardAction::Paste, handler));
+    }
+
+    fn add_clipboard_listener<F>(
+        &self,
+        event_name: &'static str,
+        action: WebClipboardAction,
+        handler: Rc<std::cell::RefCell<F>>,
+    ) -> EventListenerHandle<dyn FnMut(ClipboardEvent)>
+    where
+        F: 'static + FnMut(WebClipboardEvent),
+    {
+        let prevent_default = Rc::clone(&self.prevent_default);
+        let browser_defaults = Rc::clone(&self.browser_defaults);
+        let canvas: EventTarget = self.common.raw().clone().into();
+        let ime: EventTarget = self.ime_element.clone().into();
+        EventListenerHandle::new(
+            self.common.document.clone(),
+            event_name,
+            Closure::new(move |event: ClipboardEvent| {
+                let Some(target) = event.target() else {
+                    return;
+                };
+                if target != canvas && target != ime {
+                    return;
+                }
+                let clipboard = event.clipboard_data();
+                let text = (action == WebClipboardAction::Paste)
+                    .then(|| clipboard.as_ref()?.get_data("text/plain").ok())
+                    .flatten();
+                let request = WebClipboardEvent::new(action, text);
+                handler.borrow_mut()(request.clone());
+
+                let response = request.take_response();
+                if let (Some(clipboard), Some(text)) = (clipboard, response.as_deref()) {
+                    let _ = clipboard.set_data("text/plain", text);
+                }
+
+                if response.is_some()
+                    || (prevent_default.get()
+                        && !browser_defaults.get().contains(BrowserDefaults::CLIPBOARD))
+                {
+                    event.prevent_default();
+                }
+            }),
+        )
     }
 
     pub fn request_fullscreen(&self) {
@@ -507,6 +804,8 @@ impl Canvas {
         self.on_blur = None;
         self.on_keyboard_release = None;
         self.on_keyboard_press = None;
+        self.on_ime_keyboard_release = None;
+        self.on_ime_keyboard_press = None;
         self.on_mouse_wheel = None;
         self.on_dark_mode = None;
         self.pointer_handler.remove_listeners();
@@ -515,6 +814,16 @@ impl Canvas {
         self.animation_frame_handler.cancel();
         self.on_touch_end = None;
         self.on_context_menu = None;
+        self.on_copy = None;
+        self.on_cut = None;
+        self.on_paste = None;
+        self.on_ime_focus = None;
+        self.on_ime_blur = None;
+        self.on_composition_start = None;
+        self.on_composition_update = None;
+        self.on_composition_end = None;
+        self.on_ime_input = None;
+        self.ime_element.remove();
     }
 }
 
@@ -533,6 +842,47 @@ impl Common {
 
     pub fn raw(&self) -> &HtmlCanvasElement {
         &self.raw
+    }
+}
+
+fn is_clipboard_shortcut(event: &KeyboardEvent) -> bool {
+    is_clipboard_accelerator(
+        &event.key(),
+        event.ctrl_key(),
+        event.meta_key(),
+        event.shift_key(),
+        event.alt_key(),
+    )
+}
+
+fn is_clipboard_accelerator(key: &str, ctrl: bool, meta: bool, shift: bool, alt: bool) -> bool {
+    if alt {
+        return false;
+    }
+    let primary = ctrl || meta;
+    let key = key.to_ascii_lowercase();
+    (primary && matches!(key.as_str(), "c" | "x" | "v"))
+        || (ctrl && key == "insert")
+        || (shift && matches!(key.as_str(), "insert" | "delete"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_clipboard_accelerator;
+
+    #[test]
+    fn recognizes_browser_clipboard_accelerators() {
+        assert!(is_clipboard_accelerator("c", false, true, false, false));
+        assert!(is_clipboard_accelerator("V", true, false, false, false));
+        assert!(is_clipboard_accelerator("Insert", true, false, false, false));
+        assert!(is_clipboard_accelerator("Delete", false, false, true, false));
+    }
+
+    #[test]
+    fn does_not_release_unrelated_or_alt_graph_chords() {
+        assert!(!is_clipboard_accelerator("a", false, true, false, false));
+        assert!(!is_clipboard_accelerator("v", true, false, false, true));
+        assert!(!is_clipboard_accelerator("v", false, false, false, false));
     }
 }
 

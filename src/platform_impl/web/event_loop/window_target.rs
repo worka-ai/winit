@@ -14,7 +14,8 @@ use super::runner::{EventWrapper, Execution};
 use super::window::WindowId;
 use super::{backend, runner};
 use crate::event::{
-    DeviceId as RootDeviceId, ElementState, Event, KeyEvent, Touch, TouchPhase, WindowEvent,
+    DeviceId as RootDeviceId, ElementState, Event, KeyEvent, Touch, TouchPhase, WebInputEvent,
+    WindowEvent,
 };
 use crate::event_loop::{ControlFlow, DeviceEvents};
 use crate::keyboard::ModifiersState;
@@ -111,6 +112,28 @@ impl ActiveEventLoop {
             }
         });
 
+        let runner = self.runner.clone();
+        let has_focus = canvas.has_focus.clone();
+        canvas.on_ime(
+            move |focused| {
+                if has_focus.replace(focused) != focused {
+                    runner.send_event(Event::WindowEvent {
+                        window_id: RootWindowId(id),
+                        event: WindowEvent::Focused(focused),
+                    });
+                }
+            },
+            {
+                let runner = self.runner.clone();
+                move |ime| {
+                    runner.send_event(Event::WindowEvent {
+                        window_id: RootWindowId(id),
+                        event: WindowEvent::Ime(ime),
+                    });
+                }
+            },
+        );
+
         // It is possible that at this point the canvas has
         // been focused before the callback can be called.
         let focused = canvas
@@ -144,8 +167,8 @@ impl ActiveEventLoop {
 
                 let device_id = RootDeviceId(DeviceId::dummy());
 
-                runner.send_events(
-                    iter::once(Event::WindowEvent {
+                runner.send_events(modifiers_changed.into_iter().chain(iter::once(
+                    Event::WindowEvent {
                         window_id: RootWindowId(id),
                         event: WindowEvent::KeyboardInput {
                             device_id,
@@ -160,9 +183,8 @@ impl ActiveEventLoop {
                             },
                             is_synthetic: false,
                         },
-                    })
-                    .chain(modifiers_changed),
-                );
+                    },
+                )));
             },
         );
 
@@ -180,8 +202,8 @@ impl ActiveEventLoop {
 
                 let device_id = RootDeviceId(DeviceId::dummy());
 
-                runner.send_events(
-                    iter::once(Event::WindowEvent {
+                runner.send_events(modifiers_changed.into_iter().chain(iter::once(
+                    Event::WindowEvent {
                         window_id: RootWindowId(id),
                         event: WindowEvent::KeyboardInput {
                             device_id,
@@ -196,9 +218,8 @@ impl ActiveEventLoop {
                             },
                             is_synthetic: false,
                         },
-                    })
-                    .chain(modifiers_changed),
-                )
+                    },
+                )))
             },
         );
 
@@ -585,7 +606,24 @@ impl ActiveEventLoop {
         let runner = self.runner.clone();
         canvas.on_animation_frame(move || runner.request_redraw(RootWindowId(id)));
 
-        canvas.on_context_menu();
+        let runner = self.runner.clone();
+        canvas.on_context_menu(move |position, modifiers| {
+            runner.send_browser_event(Event::WindowEvent {
+                window_id: RootWindowId(id),
+                event: WindowEvent::WebInput(WebInputEvent::ContextMenuRequested {
+                    position,
+                    modifiers,
+                }),
+            });
+        });
+
+        let runner = self.runner.clone();
+        canvas.on_clipboard(move |event| {
+            runner.send_browser_event(Event::WindowEvent {
+                window_id: RootWindowId(id),
+                event: WindowEvent::WebInput(WebInputEvent::Clipboard(event)),
+            });
+        });
     }
 
     pub fn available_monitors(&self) -> VecDequeIter<MonitorHandle> {

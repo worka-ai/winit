@@ -38,6 +38,8 @@ use std::path::PathBuf;
 use std::sync::{Mutex, Weak};
 #[cfg(not(web_platform))]
 use std::time::Instant;
+#[cfg(any(web_platform, docsrs))]
+use std::{cell::RefCell, rc::Rc};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -221,13 +223,21 @@ pub enum WindowEvent {
     /// The keyboard modifiers have changed.
     ModifiersChanged(Modifiers),
 
+    /// A browser-native input request associated with this Web canvas.
+    ///
+    /// Browser defaults remain suppressed unless explicitly allowed through
+    /// [`crate::platform::web::BrowserDefaults`]. This event lets an application
+    /// provide its own behavior while preserving that deny-by-default policy.
+    #[cfg(any(web_platform, docsrs))]
+    WebInput(WebInputEvent),
+
     /// An event from an input method.
     ///
     /// **Note:** You have to explicitly enable this event using [`Window::set_ime_allowed`].
     ///
     /// ## Platform-specific
     ///
-    /// - **iOS / Android / Web / Orbital:** Unsupported.
+    /// - **iOS / Android / Orbital:** Unsupported.
     Ime(Ime),
 
     /// The cursor has moved on the window.
@@ -435,6 +445,72 @@ pub enum WindowEvent {
     /// Winit will aggregate duplicate redraw requests into a single event, to
     /// help avoid duplicating rendering work.
     RedrawRequested,
+}
+
+/// Browser-native input which cannot be represented by portable window events.
+#[cfg(any(web_platform, docsrs))]
+#[derive(Debug, Clone, PartialEq)]
+pub enum WebInputEvent {
+    /// The browser requested a context menu at the canvas-relative position.
+    ContextMenuRequested { position: PhysicalPosition<f64>, modifiers: ModifiersState },
+    /// The browser requested clipboard integration for the focused canvas editor.
+    Clipboard(WebClipboardEvent),
+}
+
+/// The operation requested by a browser clipboard event.
+#[cfg(any(web_platform, docsrs))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebClipboardAction {
+    Copy,
+    Cut,
+    Paste,
+}
+
+/// A synchronous browser clipboard request.
+///
+/// For paste, `text` contains the browser-provided plain text. For copy and cut,
+/// the event handler should call [`Self::set_text`] before returning. Clipboard
+/// responses cannot be deferred because browsers only accept clipboard writes
+/// while handling the trusted DOM event.
+#[cfg(any(web_platform, docsrs))]
+#[derive(Clone)]
+pub struct WebClipboardEvent {
+    pub action: WebClipboardAction,
+    pub text: Option<String>,
+    response: Rc<RefCell<Option<String>>>,
+}
+
+#[cfg(any(web_platform, docsrs))]
+impl WebClipboardEvent {
+    pub(crate) fn new(action: WebClipboardAction, text: Option<String>) -> Self {
+        Self { action, text, response: Rc::new(RefCell::new(None)) }
+    }
+
+    /// Supplies plain text to the browser for a copy or cut request.
+    pub fn set_text(&self, text: impl Into<String>) {
+        *self.response.borrow_mut() = Some(text.into());
+    }
+
+    pub(crate) fn take_response(&self) -> Option<String> {
+        self.response.borrow_mut().take()
+    }
+}
+
+#[cfg(any(web_platform, docsrs))]
+impl std::fmt::Debug for WebClipboardEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebClipboardEvent")
+            .field("action", &self.action)
+            .field("text", &self.text)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(any(web_platform, docsrs))]
+impl PartialEq for WebClipboardEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.action == other.action && self.text == other.text
+    }
 }
 
 /// Identifier of an input device.

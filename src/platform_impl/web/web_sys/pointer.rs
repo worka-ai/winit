@@ -7,9 +7,10 @@ use super::event_handle::EventListenerHandle;
 use crate::dpi::PhysicalPosition;
 use crate::event::{Force, MouseButton};
 use crate::keyboard::ModifiersState;
+use crate::platform::web::BrowserDefaults;
 
 use event::ButtonsState;
-use web_sys::PointerEvent;
+use web_sys::{HtmlTextAreaElement, PointerEvent};
 
 #[allow(dead_code)]
 pub(super) struct PointerHandler {
@@ -104,6 +105,9 @@ impl PointerHandler {
         mut mouse_handler: M,
         mut touch_handler: T,
         prevent_default: Rc<Cell<bool>>,
+        browser_defaults: Rc<Cell<BrowserDefaults>>,
+        ime_allowed: Rc<Cell<bool>>,
+        ime_element: HtmlTextAreaElement,
     ) where
         M: 'static + FnMut(ModifiersState, i32, PhysicalPosition<f64>, MouseButton),
         T: 'static + FnMut(ModifiersState, i32, PhysicalPosition<f64>, Force),
@@ -112,10 +116,18 @@ impl PointerHandler {
         let canvas = canvas_common.raw().clone();
         self.on_pointer_press =
             Some(canvas_common.add_event("pointerdown", move |event: PointerEvent| {
-                if prevent_default.get() {
+                if prevent_default.get()
+                    && !browser_defaults.get().contains(BrowserDefaults::POINTER)
+                {
                     // prevent text selection
                     event.prevent_default();
-                    // but still focus element
+                }
+                // Pointer policy controls browser behavior, not Fission's focus
+                // contract. An active IME bridge must retain keyboard focus even
+                // when pointer defaults are explicitly allowlisted.
+                if ime_allowed.get() {
+                    let _ = ime_element.focus();
+                } else {
                     let _ = canvas.focus();
                 }
 
@@ -159,6 +171,9 @@ impl PointerHandler {
         mut touch_handler: T,
         mut button_handler: B,
         prevent_default: Rc<Cell<bool>>,
+        browser_defaults: Rc<Cell<BrowserDefaults>>,
+        ime_allowed: Rc<Cell<bool>>,
+        ime_element: HtmlTextAreaElement,
     ) where
         M: 'static + FnMut(ModifiersState, i32, &mut dyn Iterator<Item = PhysicalPosition<f64>>),
         T: 'static
@@ -175,11 +190,17 @@ impl PointerHandler {
 
                 // chorded button event
                 if let Some(button) = event::mouse_button(&event) {
-                    if prevent_default.get() {
+                    if prevent_default.get()
+                        && !browser_defaults.get().contains(BrowserDefaults::POINTER)
+                    {
                         // prevent text selection
                         event.prevent_default();
                         // but still focus element
-                        let _ = canvas.focus();
+                        if ime_allowed.get() {
+                            let _ = ime_element.focus();
+                        } else {
+                            let _ = canvas.focus();
+                        }
                     }
 
                     button_handler(

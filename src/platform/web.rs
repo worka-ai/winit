@@ -62,6 +62,44 @@ use crate::platform_impl::CustomCursorFuture as PlatformCustomCursorFuture;
 use crate::platform_impl::PlatformCustomCursorSource;
 use crate::window::{CustomCursor, Window, WindowAttributes};
 
+/// Browser behavior that may run instead of being suppressed by winit.
+///
+/// Web windows deny browser defaults by default. Applications should opt in to
+/// only the event families for which browser behavior is part of their input
+/// contract.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BrowserDefaults(u8);
+
+impl BrowserDefaults {
+    pub const NONE: Self = Self(0);
+    pub const KEYBOARD: Self = Self(1 << 0);
+    pub const POINTER: Self = Self(1 << 1);
+    pub const TOUCH: Self = Self(1 << 2);
+    pub const WHEEL: Self = Self(1 << 3);
+    pub const CONTEXT_MENU: Self = Self(1 << 4);
+    pub const CLIPBOARD: Self = Self(1 << 5);
+    pub const ALL: Self = Self((1 << 6) - 1);
+
+    #[inline]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl std::ops::BitOr for BrowserDefaults {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for BrowserDefaults {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
 #[cfg(not(web_platform))]
 #[doc(hidden)]
 pub struct HtmlCanvasElement;
@@ -85,6 +123,16 @@ pub trait WindowExtWebSys {
     /// Some events are impossible to prevent. E.g. Firefox allows to access the native browser
     /// context menu with Shift+Rightclick.
     fn set_prevent_default(&self, prevent_default: bool);
+
+    /// Returns the browser-default allowlist for this window.
+    fn browser_defaults(&self) -> BrowserDefaults;
+
+    /// Replaces the browser-default allowlist for this window.
+    ///
+    /// This has no effect while [`Self::prevent_default`] is `false`. When it
+    /// is `true`, browser behavior remains denied for every family not present
+    /// in `browser_defaults`.
+    fn set_browser_defaults(&self, browser_defaults: BrowserDefaults);
 }
 
 impl WindowExtWebSys for Window {
@@ -99,6 +147,14 @@ impl WindowExtWebSys for Window {
 
     fn set_prevent_default(&self, prevent_default: bool) {
         self.window.set_prevent_default(prevent_default)
+    }
+
+    fn browser_defaults(&self) -> BrowserDefaults {
+        self.window.browser_defaults()
+    }
+
+    fn set_browser_defaults(&self, browser_defaults: BrowserDefaults) {
+        self.window.set_browser_defaults(browser_defaults)
     }
 }
 
@@ -120,6 +176,9 @@ pub trait WindowAttributesExtWebSys {
     /// Enabled by default.
     fn with_prevent_default(self, prevent_default: bool) -> Self;
 
+    /// Sets the browser-default allowlist. The default is [`BrowserDefaults::NONE`].
+    fn with_browser_defaults(self, browser_defaults: BrowserDefaults) -> Self;
+
     /// Whether the canvas should be focusable using the tab key. This is necessary to capture
     /// canvas keyboard events.
     ///
@@ -140,6 +199,11 @@ impl WindowAttributesExtWebSys for WindowAttributes {
 
     fn with_prevent_default(mut self, prevent_default: bool) -> Self {
         self.platform_specific.prevent_default = prevent_default;
+        self
+    }
+
+    fn with_browser_defaults(mut self, browser_defaults: BrowserDefaults) -> Self {
+        self.platform_specific.browser_defaults = browser_defaults;
         self
     }
 

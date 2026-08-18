@@ -1,6 +1,7 @@
 use crate::dpi::{PhysicalPosition, PhysicalSize, Position, Size};
 use crate::error::{ExternalError, NotSupportedError, OsError as RootOE};
 use crate::icon::Icon;
+use crate::platform::web::BrowserDefaults;
 use crate::window::{
     Cursor, CursorGrabMode, ImePurpose, ResizeDirection, Theme, UserAttentionType,
     WindowAttributes, WindowButtons, WindowId as RootWI, WindowLevel,
@@ -84,6 +85,15 @@ impl Window {
 
     pub(crate) fn set_prevent_default(&self, prevent_default: bool) {
         self.inner.dispatch(move |inner| inner.canvas.borrow().prevent_default.set(prevent_default))
+    }
+
+    pub(crate) fn browser_defaults(&self) -> BrowserDefaults {
+        self.inner.queue(|inner| inner.canvas.borrow().browser_defaults.get())
+    }
+
+    pub(crate) fn set_browser_defaults(&self, browser_defaults: BrowserDefaults) {
+        self.inner
+            .dispatch(move |inner| inner.canvas.borrow().browser_defaults.set(browser_defaults))
     }
 
     #[cfg(feature = "rwh_06")]
@@ -324,18 +334,19 @@ impl Inner {
     }
 
     #[inline]
-    pub fn set_ime_cursor_area(&self, _position: Position, _size: Size) {
-        // Currently a no-op as it does not seem there is good support for this on web
+    pub fn set_ime_cursor_area(&self, position: Position, _size: Size) {
+        let position = position.to_physical(self.scale_factor());
+        self.canvas.borrow().set_ime_cursor_area(position);
     }
 
     #[inline]
-    pub fn set_ime_allowed(&self, _allowed: bool) {
-        // Currently not implemented
+    pub fn set_ime_allowed(&self, allowed: bool) {
+        self.canvas.borrow().set_ime_allowed(allowed);
     }
 
     #[inline]
-    pub fn set_ime_purpose(&self, _purpose: ImePurpose) {
-        // Currently not implemented
+    pub fn set_ime_purpose(&self, purpose: ImePurpose) {
+        self.canvas.borrow().set_ime_purpose(purpose);
     }
 
     #[inline]
@@ -452,6 +463,7 @@ impl From<u64> for WindowId {
 pub struct PlatformSpecificWindowAttributes {
     pub(crate) canvas: Option<Arc<MainThreadSafe<backend::RawCanvasType>>>,
     pub(crate) prevent_default: bool,
+    pub(crate) browser_defaults: BrowserDefaults,
     pub(crate) focusable: bool,
     pub(crate) append: bool,
 }
@@ -472,6 +484,12 @@ impl PlatformSpecificWindowAttributes {
 
 impl Default for PlatformSpecificWindowAttributes {
     fn default() -> Self {
-        Self { canvas: None, prevent_default: true, focusable: true, append: false }
+        Self {
+            canvas: None,
+            prevent_default: true,
+            browser_defaults: BrowserDefaults::NONE,
+            focusable: true,
+            append: false,
+        }
     }
 }
