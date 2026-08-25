@@ -474,6 +474,7 @@ pub struct WebTextInputEvent {
     pub input_type: String,
     pub data: Option<String>,
     pub is_composing: bool,
+    pub before_input_cancelable: bool,
 }
 
 /// Direction of a browser text-control selection.

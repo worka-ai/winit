@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -66,6 +66,7 @@ pub struct Canvas {
     on_composition_start: Option<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
     on_composition_update: Option<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
     on_composition_end: Option<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
+    on_before_input: Option<EventListenerHandle<dyn FnMut(InputEvent)>>,
     on_text_input: Option<EventListenerHandle<dyn FnMut(InputEvent)>>,
     pub cursor: CursorHandler,
 }
@@ -221,6 +222,7 @@ impl Canvas {
             on_composition_start: None,
             on_composition_update: None,
             on_composition_end: None,
+            on_before_input: None,
             on_text_input: None,
             cursor,
         })
@@ -370,7 +372,23 @@ impl Canvas {
     where
         F: 'static + FnMut(WebTextInputEvent),
     {
+        #[derive(Default)]
+        struct BeforeInput {
+            input_type: String,
+            data: Option<String>,
+            cancelable: bool,
+        }
+
         let element = self.ime_element.clone();
+        let pending = Rc::new(RefCell::new(BeforeInput::default()));
+        let before = Rc::clone(&pending);
+        self.on_before_input = Some(self.add_ime_event("beforeinput", move |event: InputEvent| {
+            *before.borrow_mut() = BeforeInput {
+                input_type: event.input_type(),
+                data: event.data(),
+                cancelable: event.cancelable(),
+            };
+        }));
         self.on_text_input = Some(self.add_ime_event("input", move |event: InputEvent| {
             let selection_start = element.selection_start().ok().flatten().unwrap_or(0);
             let selection_end = element.selection_end().ok().flatten().unwrap_or(selection_start);
@@ -380,14 +398,17 @@ impl Canvas {
                 Some("forward") => WebSelectionDirection::Forward,
                 _ => WebSelectionDirection::None,
             };
+            let before = std::mem::take(&mut *pending.borrow_mut());
+            let input_type = event.input_type();
             handler(WebTextInputEvent {
                 value: element.value(),
                 selection_start,
                 selection_end,
                 selection_direction,
-                input_type: event.input_type(),
-                data: event.data(),
+                input_type: if input_type.is_empty() { before.input_type } else { input_type },
+                data: event.data().or(before.data),
                 is_composing: event.is_composing(),
+                before_input_cancelable: before.cancelable,
             });
         }));
     }
@@ -864,6 +885,7 @@ impl Canvas {
         self.on_composition_start = None;
         self.on_composition_update = None;
         self.on_composition_end = None;
+        self.on_before_input = None;
         self.on_text_input = None;
         self.ime_element.remove();
     }
