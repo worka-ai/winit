@@ -127,6 +127,14 @@ impl ImeElement {
         }
     }
 
+    fn inactive_html_element(&self) -> HtmlElement {
+        if self.password_active.get() {
+            self.textarea.clone().unchecked_into()
+        } else {
+            self.password.clone().unchecked_into()
+        }
+    }
+
     fn contains_target(&self, target: &EventTarget) -> bool {
         self.event_targets().iter().any(|candidate| candidate == target)
     }
@@ -140,13 +148,16 @@ impl ImeElement {
     }
 
     fn set_password_active(&self, active: bool) {
-        if self.password_active.replace(active) == active {
+        if self.password_active.get() == active {
             return;
         }
         let was_focused = self
             .common_document()
             .active_element()
             .is_some_and(|target| self.contains_target(&target.into()));
+        self.textarea.set_value("");
+        self.password.set_value("");
+        self.password_active.set(active);
         if was_focused {
             self.focus();
         }
@@ -165,8 +176,13 @@ impl ImeElement {
     }
 
     fn set_value(&self, value: &str) {
-        self.textarea.set_value(value);
-        self.password.set_value(value);
+        if self.password_active.get() {
+            self.password.set_value(value);
+            self.textarea.set_value("");
+        } else {
+            self.textarea.set_value(value);
+            self.password.set_value("");
+        }
     }
 
     fn selection_start(&self) -> Option<u32> {
@@ -194,14 +210,16 @@ impl ImeElement {
     }
 
     fn set_selection_range(&self, start: u32, end: u32, direction: &str) {
-        let _ = self.textarea.set_selection_range_with_direction(start, end, direction);
-        let _ = self.password.set_selection_range_with_direction(start, end, direction);
+        if self.password_active.get() {
+            let _ = self.password.set_selection_range_with_direction(start, end, direction);
+        } else {
+            let _ = self.textarea.set_selection_range_with_direction(start, end, direction);
+        }
     }
 
     fn set_attribute(&self, name: &str, value: &str) {
-        for element in self.html_elements() {
-            let _ = element.set_attribute(name, value);
-        }
+        let _ = self.active_html_element().set_attribute(name, value);
+        let _ = self.inactive_html_element().remove_attribute(name);
     }
 
     fn remove_attribute(&self, name: &str) {
