@@ -476,6 +476,7 @@ impl Canvas {
 
     pub fn set_web_ime_configuration(&self, configuration: &crate::window::WebImeConfiguration) {
         for (name, value) in [
+            ("name", configuration.name.as_str()),
             ("inputmode", configuration.input_mode.as_str()),
             ("enterkeyhint", configuration.enter_key_hint.as_str()),
             ("autocomplete", configuration.autocomplete.as_str()),

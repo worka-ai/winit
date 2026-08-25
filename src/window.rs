@@ -1870,6 +1870,8 @@ pub enum ImePurpose {
 #[cfg(any(web_platform, docsrs))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebImeConfiguration {
+    /// Stable form-control name used by browser autofill and password managers.
+    pub name: String,
     pub input_mode: String,
     pub enter_key_hint: String,
     pub autocomplete: String,
