@@ -364,6 +364,24 @@ impl Inner {
         );
     }
 
+    pub fn set_ime_state(&self, state: crate::event::ImeTextState) {
+        use crate::event::WebSelectionDirection;
+
+        let direction = if state.selection_start > state.selection_end {
+            WebSelectionDirection::Backward
+        } else if state.selection_start < state.selection_end {
+            WebSelectionDirection::Forward
+        } else {
+            WebSelectionDirection::None
+        };
+        self.canvas.borrow().set_ime_text_state(
+            &state.text,
+            state.selection_start.min(state.selection_end).min(u32::MAX as usize) as u32,
+            state.selection_start.max(state.selection_end).min(u32::MAX as usize) as u32,
+            direction,
+        );
+    }
+
     pub fn set_web_ime_configuration(&self, configuration: crate::window::WebImeConfiguration) {
         self.canvas.borrow().set_web_ime_configuration(&configuration);
     }

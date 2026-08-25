@@ -634,6 +634,10 @@ impl Canvas {
             ("autocapitalize", configuration.autocapitalize.as_str()),
             ("autocorrect", if configuration.autocorrect { "on" } else { "off" }),
             ("spellcheck", if configuration.spellcheck { "true" } else { "false" }),
+            ("aria-label", configuration.aria_label.as_str()),
+            ("aria-required", if configuration.required { "true" } else { "false" }),
+            ("aria-invalid", if configuration.invalid { "true" } else { "false" }),
+            ("aria-description", configuration.aria_description.as_str()),
         ] {
             if value.is_empty() {
                 self.ime_element.remove_attribute(name);

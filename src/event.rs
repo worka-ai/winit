@@ -899,6 +899,14 @@ pub enum Ime {
     /// Right before this event winit will send empty [`Self::Preedit`] event.
     Commit(String),
 
+    /// Complete post-edit state from a platform text session.
+    ///
+    /// Selection and composing offsets use UTF-16 code units, matching the
+    /// native conventions on Android and iOS. This event is authoritative for
+    /// replacement, autocorrect, prediction, dictation, and autofill changes
+    /// that cannot be represented as a sequence of key presses.
+    State(ImeTextState),
+
     /// Notifies when the IME was disabled.
     ///
     /// After receiving this event you won't get any more [`Preedit`][Self::Preedit] or
@@ -906,6 +914,16 @@ pub enum Ime {
     /// also stop issuing IME related requests like [`Window::set_ime_cursor_area`] and clear
     /// pending preedit text.
     Disabled,
+}
+
+/// Complete state of a platform-owned input-method adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ImeTextState {
+    pub text: String,
+    pub selection_start: usize,
+    pub selection_end: usize,
+    pub composing: Option<(usize, usize)>,
 }
 
 /// Describes touch-screen input state.
