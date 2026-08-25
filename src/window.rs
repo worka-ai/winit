@@ -1882,7 +1882,6 @@ pub enum ImePurpose {
 }
 
 /// Platform keyboard intent for a focused mobile text session.
-#[cfg(any(android_platform, ios_platform, docsrs))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImeInputType {
     #[default]
@@ -1896,7 +1895,6 @@ pub enum ImeInputType {
 }
 
 /// Return-key action for a focused mobile text session.
-#[cfg(any(android_platform, ios_platform, docsrs))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImeAction {
     #[default]
@@ -1910,7 +1908,6 @@ pub enum ImeAction {
 }
 
 /// Automatic capitalization requested from a mobile keyboard.
-#[cfg(any(android_platform, ios_platform, docsrs))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImeCapitalization {
     #[default]
@@ -1921,7 +1918,6 @@ pub enum ImeCapitalization {
 }
 
 /// Configuration for a focused Android or iOS text session.
-#[cfg(any(android_platform, ios_platform, docsrs))]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ImeConfiguration {
     pub input_type: ImeInputType,
