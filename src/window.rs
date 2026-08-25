@@ -1301,6 +1301,33 @@ impl Window {
         self.window.maybe_queue_on_main(move |w| w.set_ime_purpose(purpose))
     }
 
+    /// Synchronizes the complete value and selection of the hidden browser
+    /// text control used for canvas IME input.
+    ///
+    /// Selection offsets use UTF-16 code units. This is available only on Web;
+    /// the application remains authoritative and should update this whenever
+    /// its focused editing value changes.
+    #[cfg(any(web_platform, docsrs))]
+    pub fn set_ime_text_state(
+        &self,
+        value: impl Into<String>,
+        selection_start: u32,
+        selection_end: u32,
+        selection_direction: crate::event::WebSelectionDirection,
+    ) {
+        let value = value.into();
+        self.window.maybe_queue_on_main(move |w| {
+            w.set_ime_text_state(value, selection_start, selection_end, selection_direction)
+        })
+    }
+
+    /// Applies browser keyboard, completion, correction, and spelling hints to
+    /// the hidden text control used for canvas input.
+    #[cfg(any(web_platform, docsrs))]
+    pub fn set_web_ime_configuration(&self, configuration: WebImeConfiguration) {
+        self.window.maybe_queue_on_main(move |w| w.set_web_ime_configuration(configuration))
+    }
+
     /// Brings the window to the front and sets input focus. Has no effect if the window is
     /// already in focus, minimized, or not visible.
     ///
@@ -1837,6 +1864,18 @@ pub enum ImePurpose {
     ///
     /// For example, that could alter OSK on Wayland to show extra buttons.
     Terminal,
+}
+
+/// Browser text-control attributes for a canvas IME session.
+#[cfg(any(web_platform, docsrs))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebImeConfiguration {
+    pub input_mode: String,
+    pub enter_key_hint: String,
+    pub autocomplete: String,
+    pub autocapitalize: String,
+    pub autocorrect: bool,
+    pub spellcheck: bool,
 }
 
 /// An opaque token used to activate the [`Window`].

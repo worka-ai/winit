@@ -16,7 +16,7 @@ use crate::dpi::{LogicalPosition, PhysicalPosition, PhysicalSize};
 use crate::error::OsError as RootOE;
 use crate::event::{
     Force, Ime, InnerSizeWriter, MouseButton, MouseScrollDelta, WebClipboardAction,
-    WebClipboardEvent,
+    WebClipboardEvent, WebSelectionDirection, WebTextInputEvent,
 };
 use crate::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 use crate::platform::web::BrowserDefaults;
@@ -66,7 +66,7 @@ pub struct Canvas {
     on_composition_start: Option<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
     on_composition_update: Option<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
     on_composition_end: Option<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
-    on_ime_input: Option<EventListenerHandle<dyn FnMut(InputEvent)>>,
+    on_text_input: Option<EventListenerHandle<dyn FnMut(InputEvent)>>,
     pub cursor: CursorHandler,
 }
 
@@ -221,7 +221,7 @@ impl Canvas {
             on_composition_start: None,
             on_composition_update: None,
             on_composition_end: None,
-            on_ime_input: None,
+            on_text_input: None,
             cursor,
         })
     }
@@ -326,7 +326,6 @@ impl Canvas {
         let canvas: EventTarget = self.common.raw().clone().into();
         let ime_handler = Rc::new(std::cell::RefCell::new(ime_handler));
         let focus_handler = Rc::new(std::cell::RefCell::new(focus_handler));
-        let input_composing = Rc::new(Cell::new(false));
 
         let handler = Rc::clone(&ime_handler);
         let focus = Rc::clone(&focus_handler);
@@ -344,11 +343,9 @@ impl Canvas {
             }
         }));
 
-        let composing = Rc::clone(&input_composing);
         let handler = Rc::clone(&ime_handler);
         self.on_composition_start =
             Some(self.add_ime_event("compositionstart", move |event: CompositionEvent| {
-                composing.set(true);
                 let text = event.data().unwrap_or_default();
                 let end = text.len();
                 handler.borrow_mut()(Ime::Preedit(text, Some((end, end))));
@@ -362,29 +359,36 @@ impl Canvas {
                 handler.borrow_mut()(Ime::Preedit(text, Some((end, end))));
             }));
 
-        let composing = Rc::clone(&input_composing);
         let handler = Rc::clone(&ime_handler);
-        let element = self.ime_element.clone();
         self.on_composition_end =
-            Some(self.add_ime_event("compositionend", move |event: CompositionEvent| {
-                composing.set(false);
+            Some(self.add_ime_event("compositionend", move |_event: CompositionEvent| {
                 handler.borrow_mut()(Ime::Preedit(String::new(), None));
-                if let Some(text) = event.data().filter(|text| !text.is_empty()) {
-                    handler.borrow_mut()(Ime::Commit(text));
-                }
-                element.set_value("");
             }));
+    }
 
-        let handler = ime_handler;
+    pub fn on_text_input<F>(&mut self, mut handler: F)
+    where
+        F: 'static + FnMut(WebTextInputEvent),
+    {
         let element = self.ime_element.clone();
-        self.on_ime_input = Some(self.add_ime_event("input", move |_: InputEvent| {
-            if !input_composing.get() {
-                let text = element.value();
-                if !text.is_empty() {
-                    handler.borrow_mut()(Ime::Commit(text));
-                    element.set_value("");
-                }
-            }
+        self.on_text_input = Some(self.add_ime_event("input", move |event: InputEvent| {
+            let selection_start = element.selection_start().ok().flatten().unwrap_or(0);
+            let selection_end = element.selection_end().ok().flatten().unwrap_or(selection_start);
+            let selection_direction = match element.selection_direction().ok().flatten().as_deref()
+            {
+                Some("backward") => WebSelectionDirection::Backward,
+                Some("forward") => WebSelectionDirection::Forward,
+                _ => WebSelectionDirection::None,
+            };
+            handler(WebTextInputEvent {
+                value: element.value(),
+                selection_start,
+                selection_end,
+                selection_direction,
+                input_type: event.input_type(),
+                data: event.data(),
+                is_composing: event.is_composing(),
+            });
         }));
     }
 
@@ -426,6 +430,44 @@ impl Canvas {
             _ => "text",
         };
         self.ime_element.set_attribute("inputmode", input_mode).ok();
+    }
+
+    pub fn set_ime_text_state(
+        &self,
+        value: &str,
+        selection_start: u32,
+        selection_end: u32,
+        selection_direction: WebSelectionDirection,
+    ) {
+        if self.ime_element.value() != value {
+            self.ime_element.set_value(value);
+        }
+        let direction = match selection_direction {
+            WebSelectionDirection::Backward => "backward",
+            WebSelectionDirection::Forward => "forward",
+            WebSelectionDirection::None => "none",
+        };
+        let text_len = value.encode_utf16().count().min(u32::MAX as usize) as u32;
+        let start = selection_start.min(text_len);
+        let end = selection_end.min(text_len);
+        let _ = self.ime_element.set_selection_range_with_direction(start, end, direction);
+    }
+
+    pub fn set_web_ime_configuration(&self, configuration: &crate::window::WebImeConfiguration) {
+        for (name, value) in [
+            ("inputmode", configuration.input_mode.as_str()),
+            ("enterkeyhint", configuration.enter_key_hint.as_str()),
+            ("autocomplete", configuration.autocomplete.as_str()),
+            ("autocapitalize", configuration.autocapitalize.as_str()),
+            ("autocorrect", if configuration.autocorrect { "on" } else { "off" }),
+            ("spellcheck", if configuration.spellcheck { "true" } else { "false" }),
+        ] {
+            if value.is_empty() {
+                let _ = self.ime_element.remove_attribute(name);
+            } else {
+                let _ = self.ime_element.set_attribute(name, value);
+            }
+        }
     }
 
     pub fn on_focus<F>(&mut self, mut handler: F)
@@ -822,7 +864,7 @@ impl Canvas {
         self.on_composition_start = None;
         self.on_composition_update = None;
         self.on_composition_end = None;
-        self.on_ime_input = None;
+        self.on_text_input = None;
         self.ime_element.remove();
     }
 }

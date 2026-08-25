@@ -455,6 +455,35 @@ pub enum WebInputEvent {
     ContextMenuRequested { position: PhysicalPosition<f64>, modifiers: ModifiersState },
     /// The browser requested clipboard integration for the focused canvas editor.
     Clipboard(WebClipboardEvent),
+    /// The browser changed the hidden text control used by the focused canvas editor.
+    ///
+    /// `value` and the selection are the complete post-edit state. Applications
+    /// should reconcile this atomically instead of treating `data` as text to
+    /// append. Selection offsets use the DOM's UTF-16 code-unit convention.
+    TextInput(WebTextInputEvent),
+}
+
+/// Complete post-edit state reported by a browser text control.
+#[cfg(any(web_platform, docsrs))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebTextInputEvent {
+    pub value: String,
+    pub selection_start: u32,
+    pub selection_end: u32,
+    pub selection_direction: WebSelectionDirection,
+    pub input_type: String,
+    pub data: Option<String>,
+    pub is_composing: bool,
+}
+
+/// Direction of a browser text-control selection.
+#[cfg(any(web_platform, docsrs))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WebSelectionDirection {
+    Backward,
+    Forward,
+    #[default]
+    None,
 }
 
 /// The operation requested by a browser clipboard event.
