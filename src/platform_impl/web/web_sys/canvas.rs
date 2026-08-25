@@ -8,8 +8,8 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{
     ClipboardEvent, CompositionEvent, CssStyleDeclaration, Document, Event, EventTarget,
-    FocusEvent, HtmlCanvasElement, HtmlTextAreaElement, InputEvent, KeyboardEvent, PointerEvent,
-    WheelEvent,
+    FocusEvent, HtmlCanvasElement, HtmlElement, HtmlInputElement, HtmlTextAreaElement, InputEvent,
+    KeyboardEvent, PointerEvent, WheelEvent,
 };
 
 use crate::dpi::{LogicalPosition, PhysicalPosition, PhysicalSize};
@@ -46,8 +46,8 @@ pub struct Canvas {
     on_blur: Option<EventListenerHandle<dyn FnMut(FocusEvent)>>,
     on_keyboard_release: Option<EventListenerHandle<dyn FnMut(KeyboardEvent)>>,
     on_keyboard_press: Option<EventListenerHandle<dyn FnMut(KeyboardEvent)>>,
-    on_ime_keyboard_release: Option<EventListenerHandle<dyn FnMut(KeyboardEvent)>>,
-    on_ime_keyboard_press: Option<EventListenerHandle<dyn FnMut(KeyboardEvent)>>,
+    on_ime_keyboard_release: Vec<EventListenerHandle<dyn FnMut(KeyboardEvent)>>,
+    on_ime_keyboard_press: Vec<EventListenerHandle<dyn FnMut(KeyboardEvent)>>,
     on_mouse_wheel: Option<EventListenerHandle<dyn FnMut(WheelEvent)>>,
     on_dark_mode: Option<MediaQueryListHandle>,
     pointer_handler: PointerHandler,
@@ -59,16 +59,161 @@ pub struct Canvas {
     on_copy: Option<EventListenerHandle<dyn FnMut(ClipboardEvent)>>,
     on_cut: Option<EventListenerHandle<dyn FnMut(ClipboardEvent)>>,
     on_paste: Option<EventListenerHandle<dyn FnMut(ClipboardEvent)>>,
-    ime_element: HtmlTextAreaElement,
+    ime_element: ImeElement,
     ime_allowed: Rc<Cell<bool>>,
-    on_ime_focus: Option<EventListenerHandle<dyn FnMut(FocusEvent)>>,
-    on_ime_blur: Option<EventListenerHandle<dyn FnMut(FocusEvent)>>,
-    on_composition_start: Option<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
-    on_composition_update: Option<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
-    on_composition_end: Option<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
-    on_before_input: Option<EventListenerHandle<dyn FnMut(InputEvent)>>,
-    on_text_input: Option<EventListenerHandle<dyn FnMut(InputEvent)>>,
+    on_ime_focus: Vec<EventListenerHandle<dyn FnMut(FocusEvent)>>,
+    on_ime_blur: Vec<EventListenerHandle<dyn FnMut(FocusEvent)>>,
+    on_composition_start: Vec<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
+    on_composition_update: Vec<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
+    on_composition_end: Vec<EventListenerHandle<dyn FnMut(CompositionEvent)>>,
+    on_before_input: Vec<EventListenerHandle<dyn FnMut(InputEvent)>>,
+    on_text_input: Vec<EventListenerHandle<dyn FnMut(InputEvent)>>,
     pub cursor: CursorHandler,
+}
+
+#[derive(Clone)]
+pub(super) struct ImeElement {
+    textarea: HtmlTextAreaElement,
+    password: HtmlInputElement,
+    password_active: Rc<Cell<bool>>,
+}
+
+impl ImeElement {
+    fn create(document: &Document) -> Result<Self, RootOE> {
+        let textarea: HtmlTextAreaElement = document
+            .create_element("textarea")
+            .map_err(|_| os_error!(OsError("Failed to create IME textarea".to_owned())))?
+            .unchecked_into();
+        let password: HtmlInputElement = document
+            .create_element("input")
+            .map_err(|_| os_error!(OsError("Failed to create IME password input".to_owned())))?
+            .unchecked_into();
+        password.set_type("password");
+        let this = Self { textarea, password, password_active: Rc::new(Cell::new(false)) };
+        for element in this.html_elements() {
+            element.set_tab_index(-1);
+            element.set_attribute("autocomplete", "off").ok();
+            element.set_attribute("autocapitalize", "off").ok();
+            let style = element.style();
+            style.set_property("position", "fixed").ok();
+            style.set_property("width", "1px").ok();
+            style.set_property("height", "1px").ok();
+            style.set_property("opacity", "0").ok();
+            style.set_property("pointer-events", "none").ok();
+            style.set_property("resize", "none").ok();
+            style.set_property("overflow", "hidden").ok();
+            document
+                .body()
+                .expect("Failed to get body from document")
+                .append_child(&element)
+                .map_err(|_| os_error!(OsError("Failed to append IME element".to_owned())))?;
+        }
+        Ok(this)
+    }
+
+    fn html_elements(&self) -> [HtmlElement; 2] {
+        [self.textarea.clone().unchecked_into(), self.password.clone().unchecked_into()]
+    }
+
+    fn event_targets(&self) -> [EventTarget; 2] {
+        [self.textarea.clone().into(), self.password.clone().into()]
+    }
+
+    fn active_html_element(&self) -> HtmlElement {
+        if self.password_active.get() {
+            self.password.clone().unchecked_into()
+        } else {
+            self.textarea.clone().unchecked_into()
+        }
+    }
+
+    fn contains_target(&self, target: &EventTarget) -> bool {
+        self.event_targets().iter().any(|candidate| candidate == target)
+    }
+
+    pub(super) fn focus(&self) {
+        let _ = self.active_html_element().focus();
+    }
+
+    fn style(&self) -> CssStyleDeclaration {
+        self.active_html_element().style()
+    }
+
+    fn set_password_active(&self, active: bool) {
+        if self.password_active.replace(active) == active {
+            return;
+        }
+        let was_focused = self
+            .common_document()
+            .active_element()
+            .is_some_and(|target| self.contains_target(&target.into()));
+        if was_focused {
+            self.focus();
+        }
+    }
+
+    fn common_document(&self) -> Document {
+        self.textarea.owner_document().expect("IME element must have an owner document")
+    }
+
+    fn value(&self) -> String {
+        if self.password_active.get() {
+            self.password.value()
+        } else {
+            self.textarea.value()
+        }
+    }
+
+    fn set_value(&self, value: &str) {
+        self.textarea.set_value(value);
+        self.password.set_value(value);
+    }
+
+    fn selection_start(&self) -> Option<u32> {
+        if self.password_active.get() {
+            self.password.selection_start().ok().flatten()
+        } else {
+            self.textarea.selection_start().ok().flatten()
+        }
+    }
+
+    fn selection_end(&self) -> Option<u32> {
+        if self.password_active.get() {
+            self.password.selection_end().ok().flatten()
+        } else {
+            self.textarea.selection_end().ok().flatten()
+        }
+    }
+
+    fn selection_direction(&self) -> Option<String> {
+        if self.password_active.get() {
+            self.password.selection_direction().ok().flatten()
+        } else {
+            self.textarea.selection_direction().ok().flatten()
+        }
+    }
+
+    fn set_selection_range(&self, start: u32, end: u32, direction: &str) {
+        let _ = self.textarea.set_selection_range_with_direction(start, end, direction);
+        let _ = self.password.set_selection_range_with_direction(start, end, direction);
+    }
+
+    fn set_attribute(&self, name: &str, value: &str) {
+        for element in self.html_elements() {
+            let _ = element.set_attribute(name, value);
+        }
+    }
+
+    fn remove_attribute(&self, name: &str) {
+        for element in self.html_elements() {
+            let _ = element.remove_attribute(name);
+        }
+    }
+
+    fn remove(&self) {
+        self.textarea.remove();
+        self.password.remove();
+    }
 }
 
 pub struct Common {
@@ -130,26 +275,7 @@ impl Canvas {
 
         let style = Style::new(&window, &canvas);
 
-        let ime_element: HtmlTextAreaElement = document
-            .create_element("textarea")
-            .map_err(|_| os_error!(OsError("Failed to create IME element".to_owned())))?
-            .unchecked_into();
-        ime_element.set_tab_index(-1);
-        ime_element.set_attribute("autocomplete", "off").ok();
-        ime_element.set_attribute("autocapitalize", "off").ok();
-        let ime_style = ime_element.style();
-        ime_style.set_property("position", "fixed").ok();
-        ime_style.set_property("width", "1px").ok();
-        ime_style.set_property("height", "1px").ok();
-        ime_style.set_property("opacity", "0").ok();
-        ime_style.set_property("pointer-events", "none").ok();
-        ime_style.set_property("resize", "none").ok();
-        ime_style.set_property("overflow", "hidden").ok();
-        document
-            .body()
-            .expect("Failed to get body from document")
-            .append_child(&ime_element)
-            .map_err(|_| os_error!(OsError("Failed to append IME element".to_owned())))?;
+        let ime_element = ImeElement::create(&document)?;
 
         let cursor = CursorHandler::new(main_thread, canvas.clone(), style.clone());
 
@@ -202,8 +328,8 @@ impl Canvas {
             on_focus: None,
             on_keyboard_release: None,
             on_keyboard_press: None,
-            on_ime_keyboard_release: None,
-            on_ime_keyboard_press: None,
+            on_ime_keyboard_release: Vec::new(),
+            on_ime_keyboard_press: Vec::new(),
             on_mouse_wheel: None,
             on_dark_mode: None,
             pointer_handler: PointerHandler::new(),
@@ -217,13 +343,13 @@ impl Canvas {
             on_paste: None,
             ime_element,
             ime_allowed: Rc::new(Cell::new(false)),
-            on_ime_focus: None,
-            on_ime_blur: None,
-            on_composition_start: None,
-            on_composition_update: None,
-            on_composition_end: None,
-            on_before_input: None,
-            on_text_input: None,
+            on_ime_focus: Vec::new(),
+            on_ime_blur: Vec::new(),
+            on_composition_start: Vec::new(),
+            on_composition_update: Vec::new(),
+            on_composition_end: Vec::new(),
+            on_before_input: Vec::new(),
+            on_text_input: Vec::new(),
             cursor,
         })
     }
@@ -314,7 +440,11 @@ impl Canvas {
     {
         let ime_element = self.ime_element.clone();
         self.on_blur = Some(self.common.add_event("blur", move |event: FocusEvent| {
-            if event.related_target().as_ref() != Some(ime_element.as_ref()) {
+            if !event
+                .related_target()
+                .as_ref()
+                .is_some_and(|target| ime_element.contains_target(target))
+            {
                 handler();
             }
         }));
@@ -331,44 +461,52 @@ impl Canvas {
 
         let handler = Rc::clone(&ime_handler);
         let focus = Rc::clone(&focus_handler);
-        self.on_ime_focus = Some(self.add_ime_event("focus", move |_: FocusEvent| {
+        self.on_ime_focus = self.add_ime_events("focus", move |_: FocusEvent| {
             focus.borrow_mut()(true);
             handler.borrow_mut()(Ime::Enabled);
-        }));
+        });
 
         let handler = Rc::clone(&ime_handler);
         let focus = focus_handler;
-        self.on_ime_blur = Some(self.add_ime_event("blur", move |event: FocusEvent| {
+        let ime_element = self.ime_element.clone();
+        self.on_ime_blur = self.add_ime_events("blur", move |event: FocusEvent| {
+            if event
+                .related_target()
+                .as_ref()
+                .is_some_and(|target| ime_element.contains_target(target))
+            {
+                return;
+            }
             handler.borrow_mut()(Ime::Disabled);
             if event.related_target().as_ref() != Some(&canvas) {
                 focus.borrow_mut()(false);
             }
-        }));
+        });
 
         let handler = Rc::clone(&ime_handler);
         self.on_composition_start =
-            Some(self.add_ime_event("compositionstart", move |event: CompositionEvent| {
+            self.add_ime_events("compositionstart", move |event: CompositionEvent| {
                 let text = event.data().unwrap_or_default();
                 let end = text.len();
                 handler.borrow_mut()(Ime::Preedit(text, Some((end, end))));
-            }));
+            });
 
         let handler = Rc::clone(&ime_handler);
         self.on_composition_update =
-            Some(self.add_ime_event("compositionupdate", move |event: CompositionEvent| {
+            self.add_ime_events("compositionupdate", move |event: CompositionEvent| {
                 let text = event.data().unwrap_or_default();
                 let end = text.len();
                 handler.borrow_mut()(Ime::Preedit(text, Some((end, end))));
-            }));
+            });
 
         let handler = Rc::clone(&ime_handler);
         self.on_composition_end =
-            Some(self.add_ime_event("compositionend", move |_event: CompositionEvent| {
+            self.add_ime_events("compositionend", move |_event: CompositionEvent| {
                 handler.borrow_mut()(Ime::Preedit(String::new(), None));
-            }));
+            });
     }
 
-    pub fn on_text_input<F>(&mut self, mut handler: F)
+    pub fn on_text_input<F>(&mut self, handler: F)
     where
         F: 'static + FnMut(WebTextInputEvent),
     {
@@ -382,25 +520,25 @@ impl Canvas {
         let element = self.ime_element.clone();
         let pending = Rc::new(RefCell::new(BeforeInput::default()));
         let before = Rc::clone(&pending);
-        self.on_before_input = Some(self.add_ime_event("beforeinput", move |event: InputEvent| {
+        self.on_before_input = self.add_ime_events("beforeinput", move |event: InputEvent| {
             *before.borrow_mut() = BeforeInput {
                 input_type: event.input_type(),
                 data: event.data(),
                 cancelable: event.cancelable(),
             };
-        }));
-        self.on_text_input = Some(self.add_ime_event("input", move |event: InputEvent| {
-            let selection_start = element.selection_start().ok().flatten().unwrap_or(0);
-            let selection_end = element.selection_end().ok().flatten().unwrap_or(selection_start);
-            let selection_direction = match element.selection_direction().ok().flatten().as_deref()
-            {
+        });
+        let handler = Rc::new(RefCell::new(handler));
+        self.on_text_input = self.add_ime_events("input", move |event: InputEvent| {
+            let selection_start = element.selection_start().unwrap_or(0);
+            let selection_end = element.selection_end().unwrap_or(selection_start);
+            let selection_direction = match element.selection_direction().as_deref() {
                 Some("backward") => WebSelectionDirection::Backward,
                 Some("forward") => WebSelectionDirection::Forward,
                 _ => WebSelectionDirection::None,
             };
             let before = std::mem::take(&mut *pending.borrow_mut());
             let input_type = event.input_type();
-            handler(WebTextInputEvent {
+            handler.borrow_mut()(WebTextInputEvent {
                 value: element.value(),
                 selection_start,
                 selection_end,
@@ -410,19 +548,31 @@ impl Canvas {
                 is_composing: event.is_composing(),
                 before_input_cancelable: before.cancelable,
             });
-        }));
+        });
     }
 
-    fn add_ime_event<E, F>(
+    fn add_ime_events<E, F>(
         &self,
         event_name: &'static str,
         handler: F,
-    ) -> EventListenerHandle<dyn FnMut(E)>
+    ) -> Vec<EventListenerHandle<dyn FnMut(E)>>
     where
         E: 'static + AsRef<web_sys::Event> + wasm_bindgen::convert::FromWasmAbi,
         F: 'static + FnMut(E),
     {
-        EventListenerHandle::new(self.ime_element.clone(), event_name, Closure::new(handler))
+        let handler = Rc::new(RefCell::new(handler));
+        self.ime_element
+            .event_targets()
+            .into_iter()
+            .map(|target| {
+                let handler = Rc::clone(&handler);
+                EventListenerHandle::new(
+                    target,
+                    event_name,
+                    Closure::new(move |event| handler.borrow_mut()(event)),
+                )
+            })
+            .collect()
     }
 
     pub fn set_ime_allowed(&self, allowed: bool) {
@@ -430,7 +580,7 @@ impl Canvas {
             return;
         }
         if allowed {
-            let _ = self.ime_element.focus();
+            self.ime_element.focus();
         } else {
             let _ = self.common.raw.focus();
         }
@@ -450,7 +600,7 @@ impl Canvas {
             crate::window::ImePurpose::Terminal => "text",
             _ => "text",
         };
-        self.ime_element.set_attribute("inputmode", input_mode).ok();
+        self.ime_element.set_attribute("inputmode", input_mode);
     }
 
     pub fn set_ime_text_state(
@@ -471,10 +621,11 @@ impl Canvas {
         let text_len = value.encode_utf16().count().min(u32::MAX as usize) as u32;
         let start = selection_start.min(text_len);
         let end = selection_end.min(text_len);
-        let _ = self.ime_element.set_selection_range_with_direction(start, end, direction);
+        self.ime_element.set_selection_range(start, end, direction);
     }
 
     pub fn set_web_ime_configuration(&self, configuration: &crate::window::WebImeConfiguration) {
+        self.ime_element.set_password_active(configuration.secure);
         for (name, value) in [
             ("name", configuration.name.as_str()),
             ("inputmode", configuration.input_mode.as_str()),
@@ -485,9 +636,9 @@ impl Canvas {
             ("spellcheck", if configuration.spellcheck { "true" } else { "false" }),
         ] {
             if value.is_empty() {
-                let _ = self.ime_element.remove_attribute(name);
+                self.ime_element.remove_attribute(name);
             } else {
-                let _ = self.ime_element.set_attribute(name, value);
+                self.ime_element.set_attribute(name, value);
             }
         }
     }
@@ -541,12 +692,19 @@ impl Canvas {
             Rc::clone(&self.prevent_default),
             Rc::clone(&self.browser_defaults),
         ));
-        self.on_ime_keyboard_release = Some(make_listener(
-            self.ime_element.clone().into(),
-            handler,
-            Rc::clone(&self.prevent_default),
-            Rc::clone(&self.browser_defaults),
-        ));
+        self.on_ime_keyboard_release = self
+            .ime_element
+            .event_targets()
+            .into_iter()
+            .map(|target| {
+                make_listener(
+                    target,
+                    Rc::clone(&handler),
+                    Rc::clone(&self.prevent_default),
+                    Rc::clone(&self.browser_defaults),
+                )
+            })
+            .collect();
     }
 
     pub fn on_keyboard_press<F>(&mut self, handler: F)
@@ -589,12 +747,19 @@ impl Canvas {
             Rc::clone(&self.prevent_default),
             Rc::clone(&self.browser_defaults),
         ));
-        self.on_ime_keyboard_press = Some(make_listener(
-            self.ime_element.clone().into(),
-            handler,
-            Rc::clone(&self.prevent_default),
-            Rc::clone(&self.browser_defaults),
-        ));
+        self.on_ime_keyboard_press = self
+            .ime_element
+            .event_targets()
+            .into_iter()
+            .map(|target| {
+                make_listener(
+                    target,
+                    Rc::clone(&handler),
+                    Rc::clone(&self.prevent_default),
+                    Rc::clone(&self.browser_defaults),
+                )
+            })
+            .collect();
     }
 
     pub fn on_cursor_leave<F>(&mut self, handler: F)
@@ -769,7 +934,7 @@ impl Canvas {
         let prevent_default = Rc::clone(&self.prevent_default);
         let browser_defaults = Rc::clone(&self.browser_defaults);
         let canvas: EventTarget = self.common.raw().clone().into();
-        let ime: EventTarget = self.ime_element.clone().into();
+        let ime = self.ime_element.clone();
         EventListenerHandle::new(
             self.common.document.clone(),
             event_name,
@@ -777,7 +942,7 @@ impl Canvas {
                 let Some(target) = event.target() else {
                     return;
                 };
-                if target != canvas && target != ime {
+                if target != canvas && !ime.contains_target(&target) {
                     return;
                 }
                 let clipboard = event.clipboard_data();
@@ -868,8 +1033,8 @@ impl Canvas {
         self.on_blur = None;
         self.on_keyboard_release = None;
         self.on_keyboard_press = None;
-        self.on_ime_keyboard_release = None;
-        self.on_ime_keyboard_press = None;
+        self.on_ime_keyboard_release.clear();
+        self.on_ime_keyboard_press.clear();
         self.on_mouse_wheel = None;
         self.on_dark_mode = None;
         self.pointer_handler.remove_listeners();
@@ -881,13 +1046,13 @@ impl Canvas {
         self.on_copy = None;
         self.on_cut = None;
         self.on_paste = None;
-        self.on_ime_focus = None;
-        self.on_ime_blur = None;
-        self.on_composition_start = None;
-        self.on_composition_update = None;
-        self.on_composition_end = None;
-        self.on_before_input = None;
-        self.on_text_input = None;
+        self.on_ime_focus.clear();
+        self.on_ime_blur.clear();
+        self.on_composition_start.clear();
+        self.on_composition_update.clear();
+        self.on_composition_end.clear();
+        self.on_before_input.clear();
+        self.on_text_input.clear();
         self.ime_element.remove();
     }
 }

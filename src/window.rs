@@ -1878,6 +1878,9 @@ pub struct WebImeConfiguration {
     pub autocapitalize: String,
     pub autocorrect: bool,
     pub spellcheck: bool,
+    /// Uses a real password input so browser password managers and secure
+    /// entry behavior can recognize the focused canvas field.
+    pub secure: bool,
 }
 
 /// An opaque token used to activate the [`Window`].

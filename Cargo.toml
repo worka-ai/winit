@@ -325,6 +325,7 @@ web_sys = { package = "web-sys", version = "0.3.70", features = [
     "HtmlElement",
     "HtmlImageElement",
     "HtmlTextAreaElement",
+    "HtmlInputElement",
     "ImageBitmap",
     "ImageBitmapOptions",
     "ImageBitmapRenderingContext",
