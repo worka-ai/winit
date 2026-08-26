@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use super::canvas::Common;
+use super::canvas::{Common, ImeElement};
 use super::event;
 use super::event_handle::EventListenerHandle;
 use crate::dpi::PhysicalPosition;
@@ -10,7 +10,7 @@ use crate::keyboard::ModifiersState;
 use crate::platform::web::BrowserDefaults;
 
 use event::ButtonsState;
-use web_sys::{HtmlTextAreaElement, PointerEvent};
+use web_sys::PointerEvent;
 
 #[allow(dead_code)]
 pub(super) struct PointerHandler {
@@ -107,7 +107,7 @@ impl PointerHandler {
         prevent_default: Rc<Cell<bool>>,
         browser_defaults: Rc<Cell<BrowserDefaults>>,
         ime_allowed: Rc<Cell<bool>>,
-        ime_element: HtmlTextAreaElement,
+        ime_element: ImeElement,
     ) where
         M: 'static + FnMut(ModifiersState, i32, PhysicalPosition<f64>, MouseButton),
         T: 'static + FnMut(ModifiersState, i32, PhysicalPosition<f64>, Force),
@@ -126,7 +126,7 @@ impl PointerHandler {
                 // contract. An active IME bridge must retain keyboard focus even
                 // when pointer defaults are explicitly allowlisted.
                 if ime_allowed.get() {
-                    let _ = ime_element.focus();
+                    ime_element.focus();
                 } else {
                     let _ = canvas.focus();
                 }
@@ -173,7 +173,7 @@ impl PointerHandler {
         prevent_default: Rc<Cell<bool>>,
         browser_defaults: Rc<Cell<BrowserDefaults>>,
         ime_allowed: Rc<Cell<bool>>,
-        ime_element: HtmlTextAreaElement,
+        ime_element: ImeElement,
     ) where
         M: 'static + FnMut(ModifiersState, i32, &mut dyn Iterator<Item = PhysicalPosition<f64>>),
         T: 'static
@@ -197,7 +197,7 @@ impl PointerHandler {
                         event.prevent_default();
                         // but still focus element
                         if ime_allowed.get() {
-                            let _ = ime_element.focus();
+                            ime_element.focus();
                         } else {
                             let _ = canvas.focus();
                         }

@@ -1,6 +1,6 @@
 [package]
 name = "fission-winit"
-version = "0.30.13-fission.2"
+version = "0.30.13-fission.3"
 authors = [
     "The winit contributors",
     "Pierre Krieger <pierre.krieger1708@gmail.com>",
@@ -207,10 +207,12 @@ features = [
     "UIGestureRecognizer",
     "UITextInput",
     "UITextInputTraits",
+    "UITextView",
     "UIOrientation",
     "UIPanGestureRecognizer",
     "UIPinchGestureRecognizer",
     "UIResponder",
+    "UIScrollView",
     "UIRotationGestureRecognizer",
     "UIScreen",
     "UIScreenMode",
@@ -325,6 +327,7 @@ web_sys = { package = "web-sys", version = "0.3.70", features = [
     "HtmlElement",
     "HtmlImageElement",
     "HtmlTextAreaElement",
+    "HtmlInputElement",
     "ImageBitmap",
     "ImageBitmapOptions",
     "ImageBitmapRenderingContext",
