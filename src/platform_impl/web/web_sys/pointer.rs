@@ -142,6 +142,12 @@ impl PointerHandler {
                             event::mouse_position(&event).to_physical(super::scale_factor(&window)),
                             Force::Normalized(event.pressure() as f64),
                         );
+                        // Browsers normally provide implicit capture for touch
+                        // pointers, but that capture can be disrupted when the
+                        // hidden IME control takes focus during this callback.
+                        // Capture explicitly so the matching pointerup remains
+                        // attached to the canvas and a tap can complete.
+                        let _ = canvas.set_pointer_capture(event.pointer_id());
                     },
                     _ => {
                         mouse_handler(
