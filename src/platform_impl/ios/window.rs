@@ -363,8 +363,9 @@ impl Inner {
         warn!("`Window::set_window_icon` is ignored on iOS")
     }
 
-    pub fn set_ime_cursor_area(&self, _position: Position, _size: Size) {
-        warn!("`Window::set_ime_cursor_area` is ignored on iOS")
+    pub fn set_ime_cursor_area(&self, position: Position, size: Size) {
+        let scale = self.scale_factor();
+        self.view.set_ime_cursor_area(position.to_physical(scale), size.to_physical(scale));
     }
 
     /// Show / hide the keyboard. To show the keyboard, we call `becomeFirstResponder`,
@@ -372,19 +373,19 @@ impl Inner {
     /// [objc2_ui_kit::UIKeyInput], the keyboard will be shown.
     /// <https://developer.apple.com/documentation/uikit/uiresponder/1621113-becomefirstresponder>
     pub fn set_ime_allowed(&self, allowed: bool) {
-        if allowed {
-            unsafe {
-                self.view.becomeFirstResponder();
-            }
-        } else {
-            unsafe {
-                self.view.resignFirstResponder();
-            }
-        }
+        self.view.set_ime_allowed(allowed);
     }
 
-    pub fn set_ime_purpose(&self, _purpose: ImePurpose) {
-        warn!("`Window::set_ime_purpose` is ignored on iOS")
+    pub fn set_ime_purpose(&self, purpose: ImePurpose) {
+        self.view.set_secure_text_entry(purpose == ImePurpose::Password);
+    }
+
+    pub fn set_ime_state(&self, state: crate::event::ImeTextState) {
+        self.view.set_ime_state(state);
+    }
+
+    pub fn set_ime_configuration(&self, configuration: crate::window::ImeConfiguration) {
+        self.view.set_ime_configuration(configuration);
     }
 
     pub fn focus_window(&self) {

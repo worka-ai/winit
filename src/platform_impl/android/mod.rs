@@ -21,8 +21,8 @@ use crate::event_loop::{self, ActiveEventLoop as RootAEL, ControlFlow, DeviceEve
 use crate::platform::pump_events::PumpStatus;
 use crate::platform_impl::Fullscreen;
 use crate::window::{
-    self, CursorGrabMode, CustomCursor, CustomCursorSource, ImePurpose, ResizeDirection, Theme,
-    WindowButtons, WindowLevel,
+    self, CursorGrabMode, CustomCursor, CustomCursorSource, ImeAction, ImeCapitalization,
+    ImeConfiguration, ImeInputType, ImePurpose, ResizeDirection, Theme, WindowButtons, WindowLevel,
 };
 
 mod keycodes;
@@ -472,6 +472,45 @@ impl<T: 'static> EventLoop<T> {
                         callback(event, self.window_target());
                     },
                 }
+            },
+            InputEvent::TextEvent(state) => {
+                callback(
+                    event::Event::WindowEvent {
+                        window_id: window::WindowId(WindowId),
+                        event: event::WindowEvent::Ime(event::Ime::State(event::ImeTextState {
+                            text: state.text.clone(),
+                            selection_start: state.selection.start,
+                            selection_end: state.selection.end,
+                            composing: state.compose_region.map(|span| (span.start, span.end)),
+                        })),
+                    },
+                    self.window_target(),
+                );
+            },
+            InputEvent::TextAction(_) => {
+                callback(
+                    event::Event::WindowEvent {
+                        window_id: window::WindowId(WindowId),
+                        event: event::WindowEvent::KeyboardInput {
+                            device_id: event::DeviceId(DeviceId(0)),
+                            event: event::KeyEvent {
+                                state: event::ElementState::Pressed,
+                                physical_key: crate::keyboard::PhysicalKey::Unidentified(
+                                    crate::keyboard::NativeKeyCode::Unidentified,
+                                ),
+                                logical_key: crate::keyboard::Key::Named(
+                                    crate::keyboard::NamedKey::Enter,
+                                ),
+                                location: crate::keyboard::KeyLocation::Standard,
+                                repeat: false,
+                                text: None,
+                                platform_specific: KeyEventExtra {},
+                            },
+                            is_synthetic: false,
+                        },
+                    },
+                    self.window_target(),
+                );
             },
             _ => {
                 warn!("Unknown android_activity input event {event:?}")
@@ -924,6 +963,65 @@ impl Window {
     }
 
     pub fn set_ime_purpose(&self, _purpose: ImePurpose) {}
+
+    pub fn set_ime_state(&self, state: event::ImeTextState) {
+        use android_activity::input::{TextInputState, TextSpan};
+
+        self.app.set_text_input_state(TextInputState {
+            text: state.text,
+            selection: TextSpan { start: state.selection_start, end: state.selection_end },
+            compose_region: state.composing.map(|(start, end)| TextSpan { start, end }),
+        });
+    }
+
+    pub fn set_ime_configuration(&self, configuration: ImeConfiguration) {
+        use android_activity::input::{ImeOptions, InputType, TextInputAction};
+
+        let mut input_type = match configuration.input_type {
+            ImeInputType::Text => InputType::TYPE_CLASS_TEXT,
+            ImeInputType::Multiline => {
+                InputType::TYPE_CLASS_TEXT | InputType::TYPE_TEXT_FLAG_MULTI_LINE
+            },
+            ImeInputType::Number => {
+                InputType::TYPE_CLASS_NUMBER | InputType::TYPE_NUMBER_FLAG_DECIMAL
+            },
+            ImeInputType::Email => {
+                InputType::TYPE_CLASS_TEXT | InputType::TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+            },
+            ImeInputType::Url => InputType::TYPE_CLASS_TEXT | InputType::TYPE_TEXT_VARIATION_URI,
+            ImeInputType::Phone => InputType::TYPE_CLASS_PHONE,
+            ImeInputType::Name => {
+                InputType::TYPE_CLASS_TEXT | InputType::TYPE_TEXT_VARIATION_PERSON_NAME
+            },
+        };
+        input_type |= match configuration.capitalization {
+            ImeCapitalization::None => InputType::empty(),
+            ImeCapitalization::Characters => InputType::TYPE_TEXT_FLAG_CAP_CHARACTERS,
+            ImeCapitalization::Words => InputType::TYPE_TEXT_FLAG_CAP_WORDS,
+            ImeCapitalization::Sentences => InputType::TYPE_TEXT_FLAG_CAP_SENTENCES,
+        };
+        if configuration.autocorrect {
+            input_type |= InputType::TYPE_TEXT_FLAG_AUTO_CORRECT;
+        }
+        if !configuration.suggestions {
+            input_type |= InputType::TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+        }
+        if configuration.secure {
+            input_type = InputType::TYPE_CLASS_TEXT | InputType::TYPE_TEXT_VARIATION_PASSWORD;
+        }
+        let action = match configuration.action {
+            ImeAction::Done => TextInputAction::Done,
+            ImeAction::Go => TextInputAction::Go,
+            ImeAction::Search => TextInputAction::Search,
+            ImeAction::Send => TextInputAction::Send,
+            ImeAction::Next => TextInputAction::Next,
+            ImeAction::Previous => TextInputAction::Previous,
+            ImeAction::Newline => TextInputAction::None,
+        };
+        let mut options = ImeOptions::IME_FLAG_NO_FULLSCREEN;
+        options.set_action(action);
+        self.app.set_ime_editor_info(input_type, action, options);
+    }
 
     pub fn focus_window(&self) {}
 

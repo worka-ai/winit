@@ -4,17 +4,25 @@ use std::cell::{Cell, RefCell};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass};
-use objc2_foundation::{CGFloat, CGPoint, CGRect, MainThreadMarker, NSObject, NSSet, NSString};
+use objc2_foundation::{
+    CGFloat, CGPoint, CGRect, MainThreadMarker, NSObject, NSRange, NSSet, NSString,
+};
 use objc2_ui_kit::{
     UICoordinateSpace, UIEvent, UIForceTouchCapability, UIGestureRecognizer,
-    UIGestureRecognizerDelegate, UIGestureRecognizerState, UIKeyInput, UIPanGestureRecognizer,
-    UIPinchGestureRecognizer, UIResponder, UIRotationGestureRecognizer, UITapGestureRecognizer,
-    UITextInputTraits, UITouch, UITouchPhase, UITouchType, UITraitEnvironment, UIView,
+    UIGestureRecognizerDelegate, UIGestureRecognizerState, UIKeyInput, UIKeyboardType,
+    UIPanGestureRecognizer, UIPinchGestureRecognizer, UIResponder, UIReturnKeyType,
+    UIRotationGestureRecognizer, UIScrollViewDelegate, UITapGestureRecognizer,
+    UITextAutocapitalizationType, UITextAutocorrectionType, UITextContentTypeEmailAddress,
+    UITextContentTypeName, UITextContentTypeNewPassword, UITextContentTypeOneTimeCode,
+    UITextContentTypePassword, UITextContentTypeTelephoneNumber, UITextContentTypeURL,
+    UITextContentTypeUsername, UITextInput, UITextInputTraits, UITextSmartDashesType,
+    UITextSmartQuotesType, UITextSpellCheckingType, UITextView, UITextViewDelegate, UITouch,
+    UITouchPhase, UITouchType, UITraitEnvironment, UIView,
 };
 
 use super::app_state::{self, EventWrapper};
 use super::window::WinitUIWindow;
-use crate::dpi::PhysicalPosition;
+use crate::dpi::{PhysicalPosition, PhysicalSize};
 use crate::event::{ElementState, Event, Force, KeyEvent, Touch, TouchPhase, WindowEvent};
 use crate::keyboard::{Key, KeyCode, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
 use crate::platform_impl::platform::DEVICE_ID;
@@ -22,6 +30,9 @@ use crate::platform_impl::KeyEventExtra;
 use crate::window::{WindowAttributes, WindowId as RootWindowId};
 
 pub struct WinitViewState {
+    text_view: RefCell<Option<Retained<UITextView>>>,
+    syncing_text_state: Cell<bool>,
+    ime_action: Cell<crate::window::ImeAction>,
     pinch_gesture_recognizer: RefCell<Option<Retained<UIPinchGestureRecognizer>>>,
     doubletap_gesture_recognizer: RefCell<Option<Retained<UITapGestureRecognizer>>>,
     rotation_gesture_recognizer: RefCell<Option<Retained<UIRotationGestureRecognizer>>>,
@@ -332,6 +343,37 @@ declare_class!(
         }
     }
 
+    unsafe impl UIScrollViewDelegate for WinitView {}
+
+    unsafe impl UITextViewDelegate for WinitView {
+        #[method(textView:shouldChangeTextInRange:replacementText:)]
+        unsafe fn text_view_should_change(
+            &self,
+            _text_view: &UITextView,
+            _range: NSRange,
+            replacement: &NSString,
+        ) -> bool {
+            if replacement.to_string() == "\n"
+                && self.ivars().ime_action.get() != crate::window::ImeAction::Newline
+            {
+                self.emit_return_key();
+                false
+            } else {
+                true
+            }
+        }
+
+        #[method(textViewDidChange:)]
+        unsafe fn text_view_did_change(&self, text_view: &UITextView) {
+            self.emit_text_view_state(text_view);
+        }
+
+        #[method(textViewDidChangeSelection:)]
+        unsafe fn text_view_did_change_selection(&self, text_view: &UITextView) {
+            self.emit_text_view_state(text_view);
+        }
+    }
+
     unsafe impl UITextInputTraits for WinitView {
     }
 
@@ -360,6 +402,9 @@ impl WinitView {
         frame: CGRect,
     ) -> Retained<Self> {
         let this = mtm.alloc().set_ivars(WinitViewState {
+            text_view: RefCell::new(None),
+            syncing_text_state: Cell::new(false),
+            ime_action: Cell::new(crate::window::ImeAction::Done),
             pinch_gesture_recognizer: RefCell::new(None),
             doubletap_gesture_recognizer: RefCell::new(None),
             rotation_gesture_recognizer: RefCell::new(None),
@@ -373,6 +418,19 @@ impl WinitView {
 
         this.setMultipleTouchEnabled(true);
 
+        let text_view = unsafe {
+            UITextView::initWithFrame(
+                mtm.alloc(),
+                CGRect::new(CGPoint::new(0.0, 0.0), objc2_foundation::CGSize::new(1.0, 1.0)),
+            )
+        };
+        unsafe {
+            text_view.setAlpha(0.0);
+            text_view.setDelegate(Some(ProtocolObject::from_ref(&*this)));
+            this.addSubview(&text_view);
+        }
+        this.ivars().text_view.replace(Some(text_view));
+
         if let Some(scale_factor) = window_attributes.platform_specific.scale_factor {
             this.setContentScaleFactor(scale_factor as _);
         }
@@ -383,6 +441,198 @@ impl WinitView {
     fn window(&self) -> Option<Retained<WinitUIWindow>> {
         // SAFETY: `WinitView`s are always installed in a `WinitUIWindow`
         (**self).window().map(|window| unsafe { Retained::cast(window) })
+    }
+
+    fn emit_text_view_state(&self, text_view: &UITextView) {
+        if self.ivars().syncing_text_state.get() {
+            return;
+        }
+        let Some(window) = self.window() else {
+            return;
+        };
+        let text = unsafe { text_view.text() }.to_string();
+        let selection = unsafe { text_view.selectedRange() };
+        let composing = unsafe { text_view.markedTextRange() }.map(|range| {
+            let beginning = unsafe { text_view.beginningOfDocument() };
+            let start =
+                unsafe { text_view.offsetFromPosition_toPosition(&beginning, &range.start()) };
+            let end = unsafe { text_view.offsetFromPosition_toPosition(&beginning, &range.end()) };
+            (start.max(0) as usize, end.max(0) as usize)
+        });
+        let state = crate::event::ImeTextState {
+            text,
+            selection_start: selection.location,
+            selection_end: selection.location.saturating_add(selection.length),
+            composing,
+        };
+        let mtm = MainThreadMarker::new().unwrap();
+        app_state::handle_nonuser_event(
+            mtm,
+            EventWrapper::StaticEvent(Event::WindowEvent {
+                window_id: RootWindowId(window.id()),
+                event: WindowEvent::Ime(crate::event::Ime::State(state)),
+            }),
+        );
+    }
+
+    fn emit_return_key(&self) {
+        let Some(window) = self.window() else {
+            return;
+        };
+        let window_id = RootWindowId(window.id());
+        let mtm = MainThreadMarker::new().unwrap();
+        app_state::handle_nonuser_events(
+            mtm,
+            [ElementState::Pressed, ElementState::Released].map(|state| {
+                EventWrapper::StaticEvent(Event::WindowEvent {
+                    window_id,
+                    event: WindowEvent::KeyboardInput {
+                        device_id: DEVICE_ID,
+                        event: KeyEvent {
+                            state,
+                            logical_key: Key::Named(NamedKey::Enter),
+                            physical_key: PhysicalKey::Code(KeyCode::Enter),
+                            platform_specific: KeyEventExtra {},
+                            repeat: false,
+                            location: KeyLocation::Standard,
+                            text: None,
+                        },
+                        is_synthetic: false,
+                    },
+                })
+            }),
+        );
+    }
+
+    pub(crate) fn set_ime_allowed(&self, allowed: bool) {
+        let Some(text_view) = self.ivars().text_view.borrow().clone() else {
+            return;
+        };
+        unsafe {
+            if allowed {
+                text_view.becomeFirstResponder();
+            } else {
+                text_view.resignFirstResponder();
+            }
+        }
+    }
+
+    pub(crate) fn set_ime_cursor_area(
+        &self,
+        position: PhysicalPosition<f64>,
+        size: PhysicalSize<f64>,
+    ) {
+        if let Some(text_view) = self.ivars().text_view.borrow().as_ref() {
+            text_view.setFrame(CGRect::new(
+                CGPoint::new(position.x as CGFloat, position.y as CGFloat),
+                objc2_foundation::CGSize::new(
+                    size.width.max(1.0) as CGFloat,
+                    size.height.max(1.0) as CGFloat,
+                ),
+            ));
+        }
+    }
+
+    pub(crate) fn set_ime_state(&self, state: crate::event::ImeTextState) {
+        let Some(text_view) = self.ivars().text_view.borrow().clone() else {
+            return;
+        };
+        let current_text = unsafe { text_view.text() }.to_string();
+        let current_selection = unsafe { text_view.selectedRange() };
+        if current_text == state.text
+            && current_selection.location == state.selection_start
+            && current_selection.location.saturating_add(current_selection.length)
+                == state.selection_end
+        {
+            return;
+        }
+        self.ivars().syncing_text_state.set(true);
+        let text = NSString::from_str(&state.text);
+        unsafe {
+            text_view.setText(Some(&text));
+            text_view.setSelectedRange(NSRange {
+                location: state.selection_start.min(state.selection_end),
+                length: state.selection_start.abs_diff(state.selection_end),
+            });
+        }
+        self.ivars().syncing_text_state.set(false);
+    }
+
+    pub(crate) fn set_secure_text_entry(&self, secure: bool) {
+        if let Some(text_view) = self.ivars().text_view.borrow().as_ref() {
+            unsafe { text_view.setSecureTextEntry(secure) };
+        }
+    }
+
+    pub(crate) fn set_ime_configuration(&self, configuration: crate::window::ImeConfiguration) {
+        use crate::window::{ImeAction, ImeCapitalization, ImeInputType};
+
+        let Some(text_view) = self.ivars().text_view.borrow().clone() else {
+            return;
+        };
+        self.ivars().ime_action.set(configuration.action);
+        let keyboard_type = match configuration.input_type {
+            ImeInputType::Text | ImeInputType::Multiline => UIKeyboardType::Default,
+            ImeInputType::Number => UIKeyboardType::DecimalPad,
+            ImeInputType::Email => UIKeyboardType::EmailAddress,
+            ImeInputType::Url => UIKeyboardType::URL,
+            ImeInputType::Phone => UIKeyboardType::PhonePad,
+            ImeInputType::Name => UIKeyboardType::NamePhonePad,
+        };
+        let return_key = match configuration.action {
+            ImeAction::Done => UIReturnKeyType::UIReturnKeyDone,
+            ImeAction::Go => UIReturnKeyType::UIReturnKeyGo,
+            ImeAction::Search => UIReturnKeyType::UIReturnKeySearch,
+            ImeAction::Send => UIReturnKeyType::UIReturnKeySend,
+            ImeAction::Next => UIReturnKeyType::UIReturnKeyNext,
+            ImeAction::Previous | ImeAction::Newline => UIReturnKeyType::UIReturnKeyDefault,
+        };
+        let capitalization = match configuration.capitalization {
+            ImeCapitalization::None => UITextAutocapitalizationType::None,
+            ImeCapitalization::Characters => UITextAutocapitalizationType::AllCharacters,
+            ImeCapitalization::Words => UITextAutocapitalizationType::Words,
+            ImeCapitalization::Sentences => UITextAutocapitalizationType::Sentences,
+        };
+        let content_type = unsafe {
+            configuration.autofill_hints.iter().find_map(|hint| match hint.as_str() {
+                "name" => Some(UITextContentTypeName),
+                "email" | "email-address" => Some(UITextContentTypeEmailAddress),
+                "tel" | "telephone" => Some(UITextContentTypeTelephoneNumber),
+                "url" => Some(UITextContentTypeURL),
+                "username" => Some(UITextContentTypeUsername),
+                "password" | "current-password" => Some(UITextContentTypePassword),
+                "new-password" => Some(UITextContentTypeNewPassword),
+                "one-time-code" => Some(UITextContentTypeOneTimeCode),
+                _ => None,
+            })
+        };
+        unsafe {
+            text_view.setKeyboardType(keyboard_type);
+            text_view.setReturnKeyType(return_key);
+            text_view.setAutocapitalizationType(capitalization);
+            text_view.setAutocorrectionType(if configuration.autocorrect {
+                UITextAutocorrectionType::Yes
+            } else {
+                UITextAutocorrectionType::No
+            });
+            text_view.setSpellCheckingType(if configuration.spellcheck {
+                UITextSpellCheckingType::Yes
+            } else {
+                UITextSpellCheckingType::No
+            });
+            text_view.setSmartDashesType(if configuration.smart_dashes {
+                UITextSmartDashesType::Yes
+            } else {
+                UITextSmartDashesType::No
+            });
+            text_view.setSmartQuotesType(if configuration.smart_quotes {
+                UITextSmartQuotesType::Yes
+            } else {
+                UITextSmartQuotesType::No
+            });
+            text_view.setSecureTextEntry(configuration.secure);
+            text_view.setTextContentType(content_type);
+        }
     }
 
     pub(crate) fn recognize_pinch_gesture(&self, should_recognize: bool) {
@@ -544,35 +794,31 @@ impl WinitView {
         let window = self.window().unwrap();
         let window_id = RootWindowId(window.id());
         let mtm = MainThreadMarker::new().unwrap();
-        // send individual events for each character
+        // Produced text is one transaction even when it contains several
+        // Unicode scalars (prediction, dictation, emoji, or remote keyboards).
+        let text = smol_str::SmolStr::new(text.to_string());
         app_state::handle_nonuser_events(
             mtm,
-            text.to_string().chars().flat_map(|c| {
-                let text = smol_str::SmolStr::from_iter([c]);
-                // Emit both press and release events
-                [ElementState::Pressed, ElementState::Released].map(|state| {
-                    EventWrapper::StaticEvent(Event::WindowEvent {
-                        window_id,
-                        event: WindowEvent::KeyboardInput {
-                            event: KeyEvent {
-                                text: if state == ElementState::Pressed {
-                                    Some(text.clone())
-                                } else {
-                                    None
-                                },
-                                state,
-                                location: KeyLocation::Standard,
-                                repeat: false,
-                                logical_key: Key::Character(text.clone()),
-                                physical_key: PhysicalKey::Unidentified(
-                                    NativeKeyCode::Unidentified,
-                                ),
-                                platform_specific: KeyEventExtra {},
+            [ElementState::Pressed, ElementState::Released].map(|state| {
+                EventWrapper::StaticEvent(Event::WindowEvent {
+                    window_id,
+                    event: WindowEvent::KeyboardInput {
+                        event: KeyEvent {
+                            text: if state == ElementState::Pressed {
+                                Some(text.clone())
+                            } else {
+                                None
                             },
-                            is_synthetic: false,
-                            device_id: DEVICE_ID,
+                            state,
+                            location: KeyLocation::Standard,
+                            repeat: false,
+                            logical_key: Key::Character(text.clone()),
+                            physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+                            platform_specific: KeyEventExtra {},
                         },
-                    })
+                        is_synthetic: false,
+                        device_id: DEVICE_ID,
+                    },
                 })
             }),
         );

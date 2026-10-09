@@ -1301,6 +1301,48 @@ impl Window {
         self.window.maybe_queue_on_main(move |w| w.set_ime_purpose(purpose))
     }
 
+    /// Synchronizes the complete value and selection of the hidden browser
+    /// text control used for canvas IME input.
+    ///
+    /// Selection offsets use UTF-16 code units. This is available only on Web;
+    /// the application remains authoritative and should update this whenever
+    /// its focused editing value changes.
+    #[cfg(any(web_platform, docsrs))]
+    pub fn set_ime_text_state(
+        &self,
+        value: impl Into<String>,
+        selection_start: u32,
+        selection_end: u32,
+        selection_direction: crate::event::WebSelectionDirection,
+    ) {
+        let value = value.into();
+        self.window.maybe_queue_on_main(move |w| {
+            w.set_ime_text_state(value, selection_start, selection_end, selection_direction)
+        })
+    }
+
+    /// Synchronizes the complete state of a platform text-input adapter.
+    ///
+    /// Selection and composing offsets use UTF-16 code units. Supported by
+    /// Web, Android GameActivity, and iOS.
+    #[cfg(any(web_platform, android_platform, ios_platform, docsrs))]
+    pub fn set_ime_state(&self, state: crate::event::ImeTextState) {
+        self.window.maybe_queue_on_main(move |w| w.set_ime_state(state))
+    }
+
+    /// Configures the active Android or iOS software-keyboard session.
+    #[cfg(any(android_platform, ios_platform, docsrs))]
+    pub fn set_ime_configuration(&self, configuration: ImeConfiguration) {
+        self.window.maybe_queue_on_main(move |w| w.set_ime_configuration(configuration))
+    }
+
+    /// Applies browser keyboard, completion, correction, and spelling hints to
+    /// the hidden text control used for canvas input.
+    #[cfg(any(web_platform, docsrs))]
+    pub fn set_web_ime_configuration(&self, configuration: WebImeConfiguration) {
+        self.window.maybe_queue_on_main(move |w| w.set_web_ime_configuration(configuration))
+    }
+
     /// Brings the window to the front and sets input focus. Has no effect if the window is
     /// already in focus, minimized, or not visible.
     ///
@@ -1837,6 +1879,82 @@ pub enum ImePurpose {
     ///
     /// For example, that could alter OSK on Wayland to show extra buttons.
     Terminal,
+}
+
+/// Platform keyboard intent for a focused mobile text session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImeInputType {
+    #[default]
+    Text,
+    Multiline,
+    Number,
+    Email,
+    Url,
+    Phone,
+    Name,
+}
+
+/// Return-key action for a focused mobile text session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImeAction {
+    #[default]
+    Done,
+    Go,
+    Search,
+    Send,
+    Next,
+    Previous,
+    Newline,
+}
+
+/// Automatic capitalization requested from a mobile keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImeCapitalization {
+    #[default]
+    None,
+    Characters,
+    Words,
+    Sentences,
+}
+
+/// Configuration for a focused Android or iOS text session.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ImeConfiguration {
+    pub input_type: ImeInputType,
+    pub action: ImeAction,
+    pub capitalization: ImeCapitalization,
+    pub autocorrect: bool,
+    pub suggestions: bool,
+    pub spellcheck: bool,
+    pub smart_dashes: bool,
+    pub smart_quotes: bool,
+    pub secure: bool,
+    pub autofill_hints: Vec<String>,
+}
+
+/// Browser text-control attributes for a canvas IME session.
+#[cfg(any(web_platform, docsrs))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebImeConfiguration {
+    /// Stable form-control name used by browser autofill and password managers.
+    pub name: String,
+    pub input_mode: String,
+    pub enter_key_hint: String,
+    pub autocomplete: String,
+    pub autocapitalize: String,
+    pub autocorrect: bool,
+    pub spellcheck: bool,
+    /// Uses a real password input so browser password managers and secure
+    /// entry behavior can recognize the focused canvas field.
+    pub secure: bool,
+    /// Accessible name for the active canvas field.
+    pub aria_label: String,
+    /// Whether the field is required by its form contract.
+    pub required: bool,
+    /// Whether application validation currently marks the field invalid.
+    pub invalid: bool,
+    /// Accessible supporting or validation description.
+    pub aria_description: String,
 }
 
 /// An opaque token used to activate the [`Window`].

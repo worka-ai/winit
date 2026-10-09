@@ -624,6 +624,14 @@ impl ActiveEventLoop {
                 event: WindowEvent::WebInput(WebInputEvent::Clipboard(event)),
             });
         });
+
+        let runner = self.runner.clone();
+        canvas.on_text_input(move |event| {
+            runner.send_browser_event(Event::WindowEvent {
+                window_id: RootWindowId(id),
+                event: WindowEvent::WebInput(WebInputEvent::TextInput(event)),
+            });
+        });
     }
 
     pub fn available_monitors(&self) -> VecDequeIter<MonitorHandle> {
