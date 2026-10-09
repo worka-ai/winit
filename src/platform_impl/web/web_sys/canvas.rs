@@ -490,46 +490,50 @@ impl Canvas {
         F: 'static + FnMut(PhysicalKey, Key, Option<SmolStr>, KeyLocation, bool, ModifiersState),
     {
         let handler = Rc::new(std::cell::RefCell::new(handler));
-        let make_listener =
-            |target: EventTarget,
-             handler: Rc<std::cell::RefCell<F>>,
-             prevent_default: Rc<Cell<bool>>,
-             browser_defaults: Rc<Cell<BrowserDefaults>>| {
-                EventListenerHandle::new(
-                    target,
-                    "keydown",
-                    Closure::new(move |event: KeyboardEvent| {
-                        if prevent_default.get()
-                            && !browser_defaults.get().contains(BrowserDefaults::KEYBOARD)
-                            && !event.is_composing()
-                            && !is_clipboard_shortcut(&event)
-                        {
-                            event.prevent_default();
-                        }
-                        let key = event::key(&event);
-                        let modifiers = event::keyboard_modifiers(&event);
-                        handler.borrow_mut()(
-                            event::key_code(&event),
-                            key,
-                            event::key_text(&event),
-                            event::key_location(&event),
-                            event.repeat(),
-                            modifiers,
-                        );
-                    }),
-                )
-            };
+        let make_listener = |target: EventTarget,
+                             handler: Rc<std::cell::RefCell<F>>,
+                             prevent_default: Rc<Cell<bool>>,
+                             browser_defaults: Rc<Cell<BrowserDefaults>>,
+                             ime_bridge: bool| {
+            EventListenerHandle::new(
+                target,
+                "keydown",
+                Closure::new(move |event: KeyboardEvent| {
+                    if should_prevent_keydown(
+                        ime_bridge,
+                        prevent_default.get(),
+                        browser_defaults.get(),
+                        event.is_composing(),
+                        is_clipboard_shortcut(&event),
+                    ) {
+                        event.prevent_default();
+                    }
+                    let key = event::key(&event);
+                    let modifiers = event::keyboard_modifiers(&event);
+                    handler.borrow_mut()(
+                        event::key_code(&event),
+                        key,
+                        event::key_text(&event),
+                        event::key_location(&event),
+                        event.repeat(),
+                        modifiers,
+                    );
+                }),
+            )
+        };
         self.on_keyboard_press = Some(make_listener(
             self.common.raw().clone().into(),
             Rc::clone(&handler),
             Rc::clone(&self.prevent_default),
             Rc::clone(&self.browser_defaults),
+            false,
         ));
         self.on_ime_keyboard_press = Some(make_listener(
             self.ime_element.clone().into(),
             handler,
             Rc::clone(&self.prevent_default),
             Rc::clone(&self.browser_defaults),
+            true,
         ));
     }
 
@@ -855,6 +859,19 @@ fn is_clipboard_shortcut(event: &KeyboardEvent) -> bool {
     )
 }
 
+fn should_prevent_keydown(
+    ime_bridge: bool,
+    prevent_default: bool,
+    browser_defaults: BrowserDefaults,
+    composing: bool,
+    clipboard_shortcut: bool,
+) -> bool {
+    !composing
+        && !clipboard_shortcut
+        && (ime_bridge
+            || (prevent_default && !browser_defaults.contains(BrowserDefaults::KEYBOARD)))
+}
+
 fn is_clipboard_accelerator(key: &str, ctrl: bool, meta: bool, shift: bool, alt: bool) -> bool {
     if alt {
         return false;
@@ -868,7 +885,8 @@ fn is_clipboard_accelerator(key: &str, ctrl: bool, meta: bool, shift: bool, alt:
 
 #[cfg(test)]
 mod tests {
-    use super::is_clipboard_accelerator;
+    use super::{is_clipboard_accelerator, should_prevent_keydown};
+    use crate::platform::web::BrowserDefaults;
 
     #[test]
     fn recognizes_browser_clipboard_accelerators() {
@@ -883,6 +901,13 @@ mod tests {
         assert!(!is_clipboard_accelerator("a", false, true, false, false));
         assert!(!is_clipboard_accelerator("v", true, false, false, true));
         assert!(!is_clipboard_accelerator("v", false, false, false, false));
+    }
+
+    #[test]
+    fn ime_bridge_prevents_physical_keys_from_becoming_duplicate_dom_input() {
+        assert!(should_prevent_keydown(true, false, BrowserDefaults::KEYBOARD, false, false,));
+        assert!(!should_prevent_keydown(true, false, BrowserDefaults::KEYBOARD, true, false,));
+        assert!(!should_prevent_keydown(true, false, BrowserDefaults::KEYBOARD, false, true,));
     }
 }
 
