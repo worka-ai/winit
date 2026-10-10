@@ -1,6 +1,6 @@
 [package]
 name = "fission-winit"
-version = "0.30.13-fission.4"
+version = "0.30.13-fission.5"
 authors = [
     "The winit contributors",
     "Pierre Krieger <pierre.krieger1708@gmail.com>",

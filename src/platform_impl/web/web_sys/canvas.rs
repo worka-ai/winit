@@ -9,7 +9,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{
     ClipboardEvent, CompositionEvent, CssStyleDeclaration, Document, Event, EventTarget,
     FocusEvent, HtmlCanvasElement, HtmlElement, HtmlInputElement, HtmlTextAreaElement, InputEvent,
-    KeyboardEvent, PointerEvent, WheelEvent,
+    KeyboardEvent, MouseEvent, PointerEvent, WheelEvent,
 };
 
 use crate::dpi::{LogicalPosition, PhysicalPosition, PhysicalSize};
@@ -234,6 +234,7 @@ impl ImeElement {
     }
 }
 
+#[derive(Clone)]
 pub struct Common {
     pub window: web_sys::Window,
     pub document: Document,
@@ -244,6 +245,43 @@ pub struct Common {
     style: Style,
     old_size: Rc<Cell<PhysicalSize<u32>>>,
     current_size: Rc<Cell<PhysicalSize<u32>>>,
+}
+
+impl Common {
+    /// Map a viewport-space browser event into the physical content-box
+    /// coordinates shared by window events and rendering.
+    ///
+    /// The canvas content box is not necessarily `CSS pixels * devicePixelRatio`:
+    /// mobile viewport scaling, browser zoom, CSS transforms, and an in-flight
+    /// resize can all make those coordinate spaces diverge. The resize
+    /// observer's physical content-box size is the rendering authority, so it
+    /// must also be the input authority.
+    pub(super) fn physical_event_position(&self, event: &MouseEvent) -> PhysicalPosition<f64> {
+        let bounds = self.raw.get_bounding_client_rect();
+        let border_left = super::style_size_property(&self.style, "border-left-width");
+        let border_right = super::style_size_property(&self.style, "border-right-width");
+        let border_top = super::style_size_property(&self.style, "border-top-width");
+        let border_bottom = super::style_size_property(&self.style, "border-bottom-width");
+        let padding_left = super::style_size_property(&self.style, "padding-left");
+        let padding_right = super::style_size_property(&self.style, "padding-right");
+        let padding_top = super::style_size_property(&self.style, "padding-top");
+        let padding_bottom = super::style_size_property(&self.style, "padding-bottom");
+        let css_width = bounds.width() - border_left - border_right - padding_left - padding_right;
+        let css_height =
+            bounds.height() - border_top - border_bottom - padding_top - padding_bottom;
+        let physical = self.current_size.get();
+
+        if css_width > 0.0 && css_height > 0.0 && physical.width > 0 && physical.height > 0 {
+            let css_x = f64::from(event.client_x()) - bounds.left() - border_left - padding_left;
+            let css_y = f64::from(event.client_y()) - bounds.top() - border_top - padding_top;
+            PhysicalPosition::new(
+                css_x * f64::from(physical.width) / css_width,
+                css_y * f64::from(physical.height) / css_height,
+            )
+        } else {
+            event::mouse_position(event).to_physical(super::scale_factor(&self.window))
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -915,7 +953,7 @@ impl Canvas {
     where
         F: 'static + FnMut(PhysicalPosition<f64>, ModifiersState),
     {
-        let window = self.common.window.clone();
+        let common = self.common.clone();
         let prevent_default = Rc::clone(&self.prevent_default);
         let browser_defaults = Rc::clone(&self.browser_defaults);
         self.on_context_menu =
@@ -925,10 +963,7 @@ impl Canvas {
                 {
                     event.prevent_default();
                 }
-                handler(
-                    event::mouse_position(&event).to_physical(super::scale_factor(&window)),
-                    event::mouse_modifiers(&event),
-                );
+                handler(common.physical_event_position(&event), event::mouse_modifiers(&event));
             }));
     }
 
