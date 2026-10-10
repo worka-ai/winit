@@ -77,7 +77,7 @@ impl PointerHandler {
         M: 'static + FnMut(ModifiersState, i32, PhysicalPosition<f64>, MouseButton),
         T: 'static + FnMut(ModifiersState, i32, PhysicalPosition<f64>, Force),
     {
-        let window = canvas_common.window.clone();
+        let common = canvas_common.clone();
         self.on_pointer_release =
             Some(canvas_common.add_event("pointerup", move |event: PointerEvent| {
                 let modifiers = event::mouse_modifiers(&event);
@@ -86,13 +86,13 @@ impl PointerHandler {
                     "touch" => touch_handler(
                         modifiers,
                         event.pointer_id(),
-                        event::mouse_position(&event).to_physical(super::scale_factor(&window)),
+                        common.physical_event_position(&event),
                         Force::Normalized(event.pressure() as f64),
                     ),
                     _ => mouse_handler(
                         modifiers,
                         event.pointer_id(),
-                        event::mouse_position(&event).to_physical(super::scale_factor(&window)),
+                        common.physical_event_position(&event),
                         event::mouse_button(&event).expect("no mouse button released"),
                     ),
                 }
@@ -112,7 +112,7 @@ impl PointerHandler {
         M: 'static + FnMut(ModifiersState, i32, PhysicalPosition<f64>, MouseButton),
         T: 'static + FnMut(ModifiersState, i32, PhysicalPosition<f64>, Force),
     {
-        let window = canvas_common.window.clone();
+        let common = canvas_common.clone();
         let canvas = canvas_common.raw().clone();
         self.on_pointer_press =
             Some(canvas_common.add_event("pointerdown", move |event: PointerEvent| {
@@ -139,7 +139,7 @@ impl PointerHandler {
                         touch_handler(
                             modifiers,
                             event.pointer_id(),
-                            event::mouse_position(&event).to_physical(super::scale_factor(&window)),
+                            common.physical_event_position(&event),
                             Force::Normalized(event.pressure() as f64),
                         );
                         // Browsers normally provide implicit capture for touch
@@ -153,7 +153,7 @@ impl PointerHandler {
                         mouse_handler(
                             modifiers,
                             event.pointer_id(),
-                            event::mouse_position(&event).to_physical(super::scale_factor(&window)),
+                            common.physical_event_position(&event),
                             event::mouse_button(&event).expect("no mouse button pressed"),
                         );
 
@@ -186,7 +186,7 @@ impl PointerHandler {
             + FnMut(ModifiersState, i32, &mut dyn Iterator<Item = (PhysicalPosition<f64>, Force)>),
         B: 'static + FnMut(ModifiersState, i32, PhysicalPosition<f64>, ButtonsState, MouseButton),
     {
-        let window = canvas_common.window.clone();
+        let common = canvas_common.clone();
         let canvas = canvas_common.raw().clone();
         self.on_cursor_move =
             Some(canvas_common.add_event("pointermove", move |event: PointerEvent| {
@@ -212,7 +212,7 @@ impl PointerHandler {
                     button_handler(
                         modifiers,
                         id,
-                        event::mouse_position(&event).to_physical(super::scale_factor(&window)),
+                        common.physical_event_position(&event),
                         event::mouse_buttons(&event),
                         button,
                     );
@@ -221,14 +221,13 @@ impl PointerHandler {
                 }
 
                 // pointer move event
-                let scale = super::scale_factor(&window);
                 match event.pointer_type().as_str() {
                     "touch" => touch_handler(
                         modifiers,
                         id,
                         &mut event::pointer_move_event(event).map(|event| {
                             (
-                                event::mouse_position(&event).to_physical(scale),
+                                common.physical_event_position(&event),
                                 Force::Normalized(event.pressure() as f64),
                             )
                         }),
@@ -237,7 +236,7 @@ impl PointerHandler {
                         modifiers,
                         id,
                         &mut event::pointer_move_event(event)
-                            .map(|event| event::mouse_position(&event).to_physical(scale)),
+                            .map(|event| common.physical_event_position(&event)),
                     ),
                 };
             }));
@@ -247,13 +246,13 @@ impl PointerHandler {
     where
         F: 'static + FnMut(i32, PhysicalPosition<f64>, Force),
     {
-        let window = canvas_common.window.clone();
+        let common = canvas_common.clone();
         self.on_touch_cancel =
             Some(canvas_common.add_event("pointercancel", move |event: PointerEvent| {
                 if event.pointer_type() == "touch" {
                     handler(
                         event.pointer_id(),
-                        event::mouse_position(&event).to_physical(super::scale_factor(&window)),
+                        common.physical_event_position(&event),
                         Force::Normalized(event.pressure() as f64),
                     );
                 }
