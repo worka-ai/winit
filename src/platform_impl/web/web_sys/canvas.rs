@@ -251,11 +251,10 @@ impl Common {
     /// Map a viewport-space browser event into the physical content-box
     /// coordinates shared by window events and rendering.
     ///
-    /// The canvas content box is not necessarily `CSS pixels * devicePixelRatio`:
-    /// mobile viewport scaling, browser zoom, CSS transforms, and an in-flight
-    /// resize can all make those coordinate spaces diverge. The resize
-    /// observer's physical content-box size is the rendering authority, so it
-    /// must also be the input authority.
+    /// The canvas backing store is not necessarily `CSS pixels * devicePixelRatio`:
+    /// applications may deliberately cap or otherwise resize it independently
+    /// of the browser's reported scale. Its dimensions are the rendering
+    /// authority, so they must also be the input authority.
     pub(super) fn physical_event_position(&self, event: &MouseEvent) -> PhysicalPosition<f64> {
         let bounds = self.raw.get_bounding_client_rect();
         let border_left = super::style_size_property(&self.style, "border-left-width");
@@ -269,7 +268,7 @@ impl Common {
         let css_width = bounds.width() - border_left - border_right - padding_left - padding_right;
         let css_height =
             bounds.height() - border_top - border_bottom - padding_top - padding_bottom;
-        let physical = self.current_size.get();
+        let physical = PhysicalSize::new(self.raw.width(), self.raw.height());
 
         if css_width > 0.0 && css_height > 0.0 && physical.width > 0 && physical.height > 0 {
             let css_x = f64::from(event.client_x()) - bounds.left() - border_left - padding_left;
