@@ -729,6 +729,10 @@ impl Canvas {
                             && !browser_defaults.get().contains(BrowserDefaults::KEYBOARD)
                             && !event.is_composing()
                             && !is_clipboard_shortcut(&event)
+                            && !(browser_defaults
+                                .get()
+                                .contains(BrowserDefaults::KEYBOARD_SHORTCUTS)
+                                && is_browser_shortcut(&event))
                         {
                             event.prevent_default();
                         }
@@ -786,6 +790,7 @@ impl Canvas {
                         browser_defaults.get(),
                         event.is_composing(),
                         is_clipboard_shortcut(&event),
+                        is_browser_shortcut(&event),
                     ) {
                         event.prevent_default();
                     }
@@ -1145,15 +1150,28 @@ fn is_clipboard_shortcut(event: &KeyboardEvent) -> bool {
     )
 }
 
+fn is_browser_shortcut(event: &KeyboardEvent) -> bool {
+    is_browser_shortcut_accelerator(
+        &event.key(),
+        event.ctrl_key(),
+        event.meta_key(),
+        event.alt_key(),
+    )
+}
+
 fn should_prevent_keydown(
     ime_bridge: bool,
     prevent_default: bool,
     browser_defaults: BrowserDefaults,
     composing: bool,
     clipboard_shortcut: bool,
+    browser_shortcut: bool,
 ) -> bool {
     !composing
         && !clipboard_shortcut
+        && !(browser_shortcut
+            && (browser_defaults.contains(BrowserDefaults::KEYBOARD)
+                || browser_defaults.contains(BrowserDefaults::KEYBOARD_SHORTCUTS)))
         && (ime_bridge
             || (prevent_default && !browser_defaults.contains(BrowserDefaults::KEYBOARD)))
 }
@@ -1169,9 +1187,18 @@ fn is_clipboard_accelerator(key: &str, ctrl: bool, meta: bool, shift: bool, alt:
         || (shift && matches!(key.as_str(), "insert" | "delete"))
 }
 
+fn is_browser_shortcut_accelerator(key: &str, ctrl: bool, meta: bool, alt: bool) -> bool {
+    if key.eq_ignore_ascii_case("F5") {
+        return true;
+    }
+    !alt && (ctrl || meta) && matches!(key.to_ascii_lowercase().as_str(), "f" | "l" | "r")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_clipboard_accelerator, should_prevent_keydown};
+    use super::{
+        is_browser_shortcut_accelerator, is_clipboard_accelerator, should_prevent_keydown,
+    };
     use crate::platform::web::BrowserDefaults;
 
     #[test]
@@ -1190,10 +1217,30 @@ mod tests {
     }
 
     #[test]
-    fn ime_bridge_prevents_physical_keys_from_becoming_duplicate_dom_input() {
-        assert!(should_prevent_keydown(true, false, BrowserDefaults::KEYBOARD, false, false,));
-        assert!(!should_prevent_keydown(true, false, BrowserDefaults::KEYBOARD, true, false,));
-        assert!(!should_prevent_keydown(true, false, BrowserDefaults::KEYBOARD, false, true,));
+    fn recognizes_browser_command_accelerators() {
+        assert!(is_browser_shortcut_accelerator("r", true, false, false));
+        assert!(is_browser_shortcut_accelerator("F", false, true, false));
+        assert!(is_browser_shortcut_accelerator("l", true, false, false));
+        assert!(is_browser_shortcut_accelerator("F5", false, false, false));
+        assert!(!is_browser_shortcut_accelerator("a", true, false, false));
+        assert!(!is_browser_shortcut_accelerator("r", false, false, false));
+    }
+
+    #[test]
+    fn ime_bridge_only_releases_explicitly_allowed_keys() {
+        let shortcuts = BrowserDefaults::KEYBOARD_SHORTCUTS;
+        assert!(should_prevent_keydown(true, false, shortcuts, false, false, false));
+        assert!(!should_prevent_keydown(true, false, shortcuts, false, false, true));
+        assert!(!should_prevent_keydown(
+            true,
+            false,
+            BrowserDefaults::KEYBOARD,
+            false,
+            false,
+            true
+        ));
+        assert!(!should_prevent_keydown(true, false, BrowserDefaults::NONE, true, false, false));
+        assert!(!should_prevent_keydown(true, false, BrowserDefaults::NONE, false, true, false));
     }
 }
 

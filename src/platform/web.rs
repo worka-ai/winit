@@ -78,7 +78,10 @@ impl BrowserDefaults {
     pub const WHEEL: Self = Self(1 << 3);
     pub const CONTEXT_MENU: Self = Self(1 << 4);
     pub const CLIPBOARD: Self = Self(1 << 5);
-    pub const ALL: Self = Self((1 << 6) - 1);
+    /// Browser-level keyboard commands such as reload, find and location focus,
+    /// without delegating ordinary text editing or focus traversal.
+    pub const KEYBOARD_SHORTCUTS: Self = Self(1 << 6);
+    pub const ALL: Self = Self((1 << 7) - 1);
 
     #[inline]
     pub const fn contains(self, other: Self) -> bool {
